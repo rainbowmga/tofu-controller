@@ -158,7 +158,7 @@ func (i *Informer) updateHandler(oldObj, newObj any) {
 	}
 
 	for _, condition := range new.Status.Conditions {
-		if condition.Reason == infrav1.TFExecInitFailedReason || condition.Reason == infrav1.PostPlanningWebhookFailedReason {
+		if condition.Reason == infrav1.TFExecInitFailedReason || condition.Reason == infrav1.TFExecPlanFailedReason || condition.Reason == infrav1.PostPlanningWebhookFailedReason {
 			if ann := new.GetAnnotations(); ann != nil && ann[config.AnnotationErrorRevision] == new.Status.LastAttemptedRevision {
 				break
 			}

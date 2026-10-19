@@ -126,6 +126,88 @@ func TestInformer(t *testing.T) {
 	}).Should(gom.ContainSubstring("terraform plan output"))
 }
 
+// A failed plan must be reported on the pull request, like a failed init.
+func TestInformer_planFailurePostsError(t *testing.T) {
+	g := gom.NewWithT(t)
+	ns := newNamespace(t, g)
+	ctx := t.Context()
+
+	source := &sourcev1.GitRepository{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "original-source",
+			Namespace: ns.Name,
+		},
+		Spec: sourcev1.GitRepositorySpec{
+			URL: "https://github.com/tf-controller/helloworld",
+			Reference: &sourcev1.GitRepositoryRef{
+				Branch: "main",
+			},
+		},
+	}
+	expectToSucceed(t, g, k8sClient.Create(ctx, source))
+
+	tf := &infrav1.Terraform{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "helloworld",
+			Namespace: ns.Name,
+			Labels: map[string]string{
+				config.LabelKey:           config.LabelValue,
+				"infra.weave.works/pr-id": "1",
+			},
+		},
+		Spec: infrav1.TerraformSpec{
+			SourceRef: infrav1.CrossNamespaceSourceReference{
+				Name:      source.Name,
+				Namespace: ns.Name,
+				Kind:      "GitRepository",
+			},
+		},
+	}
+	expectToSucceed(t, g, k8sClient.Create(ctx, tf))
+
+	dynamicClient, err := dynamic.NewForConfig(k8sConfig)
+	g.Expect(err).NotTo(gom.HaveOccurred())
+
+	gitProvider := &providerfakes.FakeProvider{}
+	sharedInformer := createSharedInformer(g, ctx, k8sClient, dynamicClient)
+
+	informer, err := NewInformer(
+		WithLogger(logr.Discard()),
+		WithClusterClient(k8sClient),
+		WithGitProvider(gitProvider),
+		WithSharedInformer(sharedInformer),
+	)
+	g.Expect(err).NotTo(gom.HaveOccurred())
+
+	go func() {
+		g.Expect(informer.Start(ctx)).To(gom.Succeed())
+	}()
+
+	g.Eventually(func() bool {
+		return informer.HasSynced()
+	}).Should(gom.BeTrue())
+
+	k8sClient.Get(ctx, client.ObjectKeyFromObject(tf), tf)
+	patch := client.MergeFrom(tf.DeepCopy())
+	tf.Status.LastAttemptedRevision = "main@sha1:abc"
+	tf.Status.Conditions = []metav1.Condition{{
+		Type:               "Ready",
+		Status:             metav1.ConditionFalse,
+		Reason:             infrav1.TFExecPlanFailedReason,
+		Message:            "Error: Resource instance cannot be destroyed",
+		LastTransitionTime: metav1.Now(),
+	}}
+	expectToSucceed(t, g, k8sClient.Status().Patch(ctx, tf, patch))
+
+	g.Eventually(func() int {
+		return gitProvider.AddCommentToPullRequestCallCount()
+	}).Should(gom.Equal(1))
+
+	_, _, body := gitProvider.AddCommentToPullRequestArgsForCall(0)
+	g.Expect(string(body)).To(gom.ContainSubstring("encountered an error generating plan"))
+	g.Expect(string(body)).To(gom.ContainSubstring("Resource instance cannot be destroyed"))
+}
+
 func createSharedInformer(g *gom.WithT, ctx context.Context, client client.Client, dynamicClient dynamic.Interface) cache.SharedIndexInformer {
 	restMapper := client.RESTMapper()
 	mapping, err := restMapper.RESTMapping(infrav1.GroupVersion.WithKind(infrav1.TerraformKind).GroupKind())
