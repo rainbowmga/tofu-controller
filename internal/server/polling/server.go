@@ -342,6 +342,9 @@ func (s *Server) replanTerraform(ctx context.Context, object *infrav1.Terraform,
 	} else {
 		ann[meta.ReconcileRequestAnnotation] = time.Now().Format(time.RFC3339Nano)
 		ann[bpconfig.AnnotationCommentIDKey] = strconv.Itoa(commentId)
+		// The replan runs against the same revision, so an error already
+		// reported for it would otherwise suppress the comment for this run.
+		delete(ann, bpconfig.AnnotationErrorRevision)
 		terraform.SetAnnotations(ann)
 	}
 
