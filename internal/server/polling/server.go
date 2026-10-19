@@ -273,7 +273,7 @@ func (s *Server) reconcile(ctx context.Context, original *infrav1.Terraform, sou
 
 		spec := original.Spec
 		if render != nil {
-			spec = render.terraform.Spec
+			spec = plannedSpec(original.Spec, render.terraform.Spec)
 		}
 
 		// Reconcile the Terraform objects related to each PR.

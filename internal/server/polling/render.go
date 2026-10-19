@@ -149,6 +149,22 @@ func (s *Server) renderForPullRequest(ctx context.Context, original *infrav1.Ter
 	return &prRender{inputs: entry.inputs}, nil
 }
 
+// plannedSpec is the spec to plan for a pull request: what the stack plans
+// comes from the pull request, while how and as whom the runner runs, which
+// Secrets and files it gets, its backend and its webhooks stay as merged. An
+// unmerged pull request must not pick the runner's service account or pod,
+// or reference Secrets the merged stack does not.
+func plannedSpec(original, rendered infrav1.TerraformSpec) infrav1.TerraformSpec {
+	spec := *original.DeepCopy()
+	spec.Path = rendered.Path
+	spec.Vars = rendered.Vars
+	spec.Values = rendered.Values
+	spec.Targets = rendered.Targets
+	spec.Parallelism = rendered.Parallelism
+	spec.Destroy = rendered.Destroy
+	return spec
+}
+
 func (s *Server) kustomizationSource(ctx context.Context, ks *unstructured.Unstructured) (*sourcev1.GitRepository, error) {
 	kind, _, _ := unstructured.NestedString(ks.Object, "spec", "sourceRef", "kind")
 	if kind != sourcev1.GitRepositoryKind {

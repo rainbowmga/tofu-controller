@@ -61,6 +61,7 @@ func Test_reconcile_plansRenderedSpec(t *testing.T) {
 
 	rendered := original.DeepCopy()
 	rendered.Spec.Vars = []infrav1.Variable{{Name: "environment", Value: &apiextensionsv1.JSON{Raw: []byte(`"from-pull-request"`)}}}
+	rendered.Spec.ServiceAccountName = "kustomize-controller"
 	inputs := map[string]struct{}{"infrastructure/prod/stack.yaml": {}}
 	pending := map[string]bool{"2": true}
 
@@ -86,6 +87,9 @@ func Test_reconcile_plansRenderedSpec(t *testing.T) {
 	g.Expect(pr1.Spec.Vars).To(gomega.HaveLen(1))
 	g.Expect(string(pr1.Spec.Vars[0].Value.Raw)).To(gomega.Equal(`"from-pull-request"`))
 	g.Expect(pr1.Spec.PlanOnly).To(gomega.BeTrue())
+	g.Expect(pr1.Spec.ServiceAccountName).To(gomega.Equal(original.Spec.ServiceAccountName), "the runner identity stays as merged")
+	g.Expect(pr1.Spec.Plan).NotTo(gomega.BeNil())
+	g.Expect(*pr1.Spec.Plan.Lock).To(gomega.BeFalse(), "plan copies never hold the stack's state lock")
 
 	// While a pull request's render is pending, its existing plan copy stays.
 	pending["1"] = true

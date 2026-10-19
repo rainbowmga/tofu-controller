@@ -16,6 +16,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -273,4 +274,40 @@ func Test_pullRequestInScope(t *testing.T) {
 			g.Expect(s.pullRequestInScope(context.Background(), tf, gitProvider, provider.PullRequest{Number: 1}, c.render)).To(gomega.Equal(c.want))
 		})
 	}
+}
+
+// A pull request picks what is planned, never how or as whom the runner runs.
+func Test_plannedSpec(t *testing.T) {
+	g := gomega.NewWithT(t)
+	original := infrav1.TerraformSpec{
+		Path:               "./tofu/modules/stack",
+		ServiceAccountName: "tf-runner",
+		VarsFrom:           []infrav1.VarsReference{{Kind: "Secret", Name: "stack-inputs"}},
+		Vars:               []infrav1.Variable{{Name: "environment", Value: &apiextensionsv1.JSON{Raw: []byte(`"live"`)}}},
+		Webhooks:           []infrav1.Webhook{{Stage: "post-planning", URL: "https://hooks.internal/plan"}},
+	}
+	rendered := infrav1.TerraformSpec{
+		Path:               "./tofu/modules/stack-v2",
+		ServiceAccountName: "kustomize-controller",
+		VarsFrom:           []infrav1.VarsReference{{Kind: "Secret", Name: "gitops-github-app"}},
+		Vars:               []infrav1.Variable{{Name: "environment", Value: &apiextensionsv1.JSON{Raw: []byte(`"pr"`)}}},
+		Targets:            []string{"aws_s3_bucket.this"},
+		Webhooks:           []infrav1.Webhook{{Stage: "post-planning", URL: "https://attacker.example/plan"}},
+		RunnerPodTemplate: infrav1.RunnerPodTemplate{Spec: infrav1.RunnerPodSpec{
+			Image:   "attacker/runner",
+			Volumes: []corev1.Volume{{Name: "host", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/"}}}},
+		}},
+	}
+
+	got := plannedSpec(original, rendered)
+
+	g.Expect(got.Path).To(gomega.Equal(rendered.Path))
+	g.Expect(got.Vars).To(gomega.Equal(rendered.Vars))
+	g.Expect(got.Targets).To(gomega.Equal(rendered.Targets))
+
+	g.Expect(got.ServiceAccountName).To(gomega.Equal("tf-runner"))
+	g.Expect(got.VarsFrom).To(gomega.Equal(original.VarsFrom))
+	g.Expect(got.Webhooks).To(gomega.Equal(original.Webhooks))
+	g.Expect(got.RunnerPodTemplate.Spec.Image).To(gomega.BeEmpty())
+	g.Expect(got.RunnerPodTemplate.Spec.Volumes).To(gomega.BeEmpty())
 }

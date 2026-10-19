@@ -110,6 +110,11 @@ func (s *Server) reconcileTerraform(ctx context.Context, originalTF *infrav1.Ter
 		// DestroyResourcesOnDeletion must be false, otherwise plan deletion will destroy resources
 		spec.DestroyResourcesOnDeletion = false
 		spec.PlanOnly = true
+
+		// A plan copy only reads state, so it must not hold the lock the
+		// stack itself needs to apply.
+		lock := false
+		spec.Plan = &infrav1.PlanSpec{Lock: &lock}
 		spec.StoreReadablePlan = "human"
 
 		// We don't need to examine or use the outputs of the plan
