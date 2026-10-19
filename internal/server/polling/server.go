@@ -2,6 +2,7 @@ package polling
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -34,6 +35,11 @@ type Server struct {
 	allowedNamespaces     []string
 	noCrossNamespaceRefs  bool
 	gitProviderParserFn   provider.URLParserFn
+
+	// render returns a Terraform object as a pull request would apply it.
+	// Tests replace it; it defaults to renderForPullRequest.
+	render  func(ctx context.Context, original *infrav1.Terraform, source *sourcev1.GitRepository, pr provider.PullRequest, prID string) (*prRender, error)
+	renders renderCache
 }
 
 func New(options ...Option) (*Server, error) {
@@ -41,6 +47,8 @@ func New(options ...Option) (*Server, error) {
 		log:                 logr.Discard(),
 		gitProviderParserFn: provider.FromURL,
 	}
+
+	server.render = server.renderForPullRequest
 
 	for _, opt := range options {
 		if err := opt(server); err != nil {
@@ -177,59 +185,108 @@ func (s *Server) poll(ctx context.Context, resource types.NamespacedName, secret
 	return s.reconcile(ctx, tf, source, prs, gitProvider)
 }
 
-func (s *Server) filterPullRequestsByPath(ctx context.Context, tf *infrav1.Terraform, gitProvider provider.Provider, prs []provider.PullRequest) []provider.PullRequest {
+// pullRequestInScope reports whether a pull request changes what tf would
+// plan: its module, or with a render, any file the render of its
+// Kustomization read, such as the manifest that defines tf.
+func (s *Server) pullRequestInScope(ctx context.Context, tf *infrav1.Terraform, gitProvider provider.Provider, pr provider.PullRequest, render *prRender) bool {
 	if tf.Spec.BranchPlanner == nil || !tf.Spec.BranchPlanner.EnablePathScope {
-		return prs
+		return true
 	}
 
-	prefix := strings.TrimLeft(tf.Spec.Path, "./")
-	if prefix == "" {
-		return prs
+	prefixes := []string{strings.TrimLeft(tf.Spec.Path, "./")}
+	if render != nil && render.terraform != nil {
+		prefixes = append(prefixes, strings.TrimLeft(render.terraform.Spec.Path, "./"))
+	}
+	if slices.Contains(prefixes, "") {
+		return true
 	}
 
-	filteredPRs := []provider.PullRequest{}
+	changes, err := gitProvider.ListPullRequestChanges(ctx, pr)
+	if err != nil {
+		s.log.Error(err, "can't list pull request changes", "PR ID", pr.Number, "name", tf.Name, "namespace", tf.Namespace)
+	}
 
-	for _, pr := range prs {
-		changes, err := gitProvider.ListPullRequestChanges(ctx, pr)
-		if err != nil {
-			s.log.Error(err, "can't list pull request changes", "PR IR", pr.Number, "name", tf.Name, "namespace", tf.Namespace)
-		}
-
-		for _, change := range changes {
-			if strings.HasPrefix(change.Path, prefix) {
-				s.log.Info("has terraform changed", "path", change.Path)
-
-				filteredPRs = append(filteredPRs, pr)
-
-				break
+	for _, change := range changes {
+		for _, path := range []string{change.Path, change.PreviousPath} {
+			if path == "" {
+				continue
+			}
+			for _, prefix := range prefixes {
+				if strings.HasPrefix(path, prefix) {
+					s.log.Info("has terraform changed", "path", path)
+					return true
+				}
+			}
+			if render != nil {
+				if _, ok := render.inputs[path]; ok {
+					s.log.Info("has manifest changed", "path", path)
+					return true
+				}
 			}
 		}
 	}
 
-	return filteredPRs
+	return false
 }
 
 func (s *Server) reconcile(ctx context.Context, original *infrav1.Terraform, source *sourcev1.GitRepository, prs []provider.PullRequest, gitProvider provider.Provider) error {
 	log := s.log.WithValues("terraform", original.Name, "namespace", original.Namespace, "source", source.Name)
 
-	prs = s.filterPullRequestsByPath(ctx, original, gitProvider, prs)
-
 	log.Info("starting reconciliation ...")
 
-	// Create a map of pull requests, with the PR number as the key and the PR itself as the value.
+	// Create a map of the pull requests that get a plan, with the PR number as
+	// the key and the PR itself as the value.
 	prMap := map[string]provider.PullRequest{}
+	open := map[string]bool{}
 	for _, pr := range prs {
 		prId := fmt.Sprintf("%d", pr.Number)
+		if pr.Closed {
+			continue
+		}
+		open[prId] = true
+
+		// Plan the object the pull request would apply, rendered from its
+		// Kustomization at the pull request head, rather than the object in
+		// the cluster.
+		render, err := s.render(ctx, original, source, pr, prId)
+		if errors.Is(err, errRenderPending) {
+			// Keep any existing plan object until the source catches up.
+			log.Info("waiting for the pull request source to reach the head revision", "PR ID", prId)
+			prMap[prId] = pr
+			continue
+		}
+		if err != nil {
+			log.Error(err, "unable to render the pull request, planning the in-cluster object", "PR ID", prId)
+			render = nil
+		}
+		if render != nil && render.terraform == nil {
+			log.Info("the pull request removes this object, nothing to plan", "PR ID", prId)
+			continue
+		}
+
+		if !s.pullRequestInScope(ctx, original, gitProvider, pr, render) {
+			continue
+		}
+
 		prMap[prId] = pr
 		log.Info("mapping PR", "PR ID", prId)
 
+		spec := original.Spec
+		if render != nil {
+			spec = render.terraform.Spec
+		}
+
 		// Reconcile the Terraform objects related to each PR.
 		// If an error occurs, log it and continue with the next PR.
-		if err := s.reconcileTerraform(ctx, original, source, pr.HeadBranch, prId, s.branchPollingInterval); err != nil {
+		if err := s.reconcileTerraform(ctx, original, spec, source, pr.HeadBranch, prId, s.branchPollingInterval); err != nil {
 			log.Error(err, "failed to reconcile Terraform object for PR", "PR ID", prId)
 		} else {
 			log.Info("successfully reconciled Terraform object for PR", "PR ID", prId)
 		}
+	}
+
+	if err := s.deleteStaleRenderSources(ctx, source.Namespace, source.Spec.URL, open); err != nil {
+		log.Error(err, "failed to delete render sources of closed pull requests")
 	}
 
 	// List the Terraform planner objects in the namespace of the original object

@@ -125,6 +125,10 @@ require (
 	github.com/fluxcd/cli-utils v1.2.2 // indirect
 	github.com/fluxcd/pkg/apis/acl v0.10.0 // indirect
 	github.com/fluxcd/pkg/apis/event v0.28.0 // indirect
+	github.com/fluxcd/pkg/apis/kustomize v1.20.0 // indirect
+	github.com/fluxcd/pkg/envsubst v1.8.0 // indirect
+	github.com/fluxcd/pkg/kustomize v1.40.0 // indirect
+	github.com/fluxcd/pkg/sourceignore v0.18.0 // indirect
 	github.com/fluxcd/pkg/ssa v0.77.0 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.2 // indirect
