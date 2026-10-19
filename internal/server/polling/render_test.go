@@ -206,7 +206,7 @@ func tarGz(t *testing.T, files map[string]string) []byte {
 	return buf.Bytes()
 }
 
-func Test_downloadAndRenderArchive(t *testing.T) {
+func Test_renderArtifact(t *testing.T) {
 	g := gomega.NewWithT(t)
 	archive := tarGz(t, renderFixture)
 	sum := sha256.Sum256(archive)
@@ -216,17 +216,24 @@ func Test_downloadAndRenderArchive(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	s := &Server{log: logr.Discard()}
-
-	data, err := s.downloadArtifact(context.Background(), srv.URL+"/a.tar.gz", "sha256:"+hex.EncodeToString(sum[:]))
-	g.Expect(err).NotTo(gomega.HaveOccurred())
-
-	entry, err := renderArchive(context.Background(), fixtureClient().Build(), fixtureKustomization(), data)
+	entry, err := renderArtifact(context.Background(), fixtureClient().Build(), fixtureKustomization(), srv.URL+"/a.tar.gz", "sha256:"+hex.EncodeToString(sum[:]))
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	g.Expect(entry.terraforms).To(gomega.HaveLen(2))
 
-	_, err = s.downloadArtifact(context.Background(), srv.URL+"/a.tar.gz", "sha256:"+hex.EncodeToString(make([]byte, 32)))
-	g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring("digest mismatch")))
+	_, err = renderArtifact(context.Background(), fixtureClient().Build(), fixtureKustomization(), srv.URL+"/a.tar.gz", "sha256:"+hex.EncodeToString(make([]byte, 32)))
+	g.Expect(err).To(gomega.HaveOccurred(), "a digest mismatch fails the fetch")
+}
+
+func Test_repoKey(t *testing.T) {
+	g := gomega.NewWithT(t)
+	https, err := repoKey("https://github.com/Org/Repo.git")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	ssh, err := repoKey("ssh://git@github.com/org/repo")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	other, err := repoKey("https://github.com/org/other")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(https).To(gomega.Equal(ssh))
+	g.Expect(https).NotTo(gomega.Equal(other))
 }
 
 func Test_pullRequestInScope(t *testing.T) {

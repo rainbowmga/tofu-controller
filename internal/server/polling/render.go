@@ -1,14 +1,9 @@
 package polling
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +12,7 @@ import (
 
 	securejoin "github.com/cyphar/filepath-securejoin"
 	"github.com/fluxcd/pkg/apis/meta"
+	"github.com/fluxcd/pkg/http/fetch"
 	"github.com/fluxcd/pkg/kustomize"
 	securefs "github.com/fluxcd/pkg/kustomize/filesys"
 	"github.com/fluxcd/pkg/tar"
@@ -113,11 +109,15 @@ func (s *Server) renderForPullRequest(ctx context.Context, original *infrav1.Ter
 	if err != nil || ksSource == nil {
 		return nil, err
 	}
-	if normalizeURL(ksSource.Spec.URL) != normalizeURL(source.Spec.URL) {
+	ksRepo, err := repoKey(ksSource.Spec.URL)
+	if err != nil {
+		return nil, nil
+	}
+	if repo, err := repoKey(source.Spec.URL); err != nil || repo != ksRepo {
 		return nil, nil
 	}
 
-	renderSource, err := s.reconcileRenderSource(ctx, ksSource, pr.HeadBranch, prID)
+	renderSource, err := s.reconcileRenderSource(ctx, ksSource, ksRepo, pr.HeadBranch, prID)
 	if err != nil {
 		return nil, err
 	}
@@ -132,11 +132,7 @@ func (s *Server) renderForPullRequest(ctx context.Context, original *infrav1.Ter
 	key := fmt.Sprintf("%s/%s@%s", ksNamespace, ksName, artifact.Revision)
 	entry, ok := s.renders.get(key)
 	if !ok {
-		archive, err := s.downloadArtifact(ctx, artifact.URL, artifact.Digest)
-		if err != nil {
-			return nil, err
-		}
-		entry, err = renderArchive(ctx, s.clusterClient, *ks, archive)
+		entry, err = renderArtifact(ctx, s.clusterClient, *ks, artifact.URL, artifact.Digest)
 		if err != nil {
 			return nil, fmt.Errorf("unable to render Kustomization %s/%s at %s: %w", ksNamespace, ksName, artifact.Revision, err)
 		}
@@ -173,8 +169,7 @@ func (s *Server) kustomizationSource(ctx context.Context, ks *unstructured.Unstr
 
 // reconcileRenderSource keeps one source per repository and pull request,
 // tracking the pull request branch, for rendering Kustomizations.
-func (s *Server) reconcileRenderSource(ctx context.Context, ksSource *sourcev1.GitRepository, branch, prID string) (*sourcev1.GitRepository, error) {
-	repo := repoKey(ksSource.Spec.URL)
+func (s *Server) reconcileRenderSource(ctx context.Context, ksSource *sourcev1.GitRepository, repo, branch, prID string) (*sourcev1.GitRepository, error) {
 	src := &sourcev1.GitRepository{
 		ObjectMeta: renderSourceMeta(ksSource.Namespace, repo, prID),
 	}
@@ -223,10 +218,14 @@ func (s *Server) requestReconcile(ctx context.Context, src *sourcev1.GitReposito
 // deleteStaleRenderSources removes render sources of the repository whose
 // pull request is no longer open.
 func (s *Server) deleteStaleRenderSources(ctx context.Context, namespace, url string, open map[string]bool) error {
+	repo, err := repoKey(url)
+	if err != nil {
+		return nil
+	}
 	list := &sourcev1.GitRepositoryList{}
 	if err := s.clusterClient.List(ctx, list, client.InNamespace(namespace), client.MatchingLabels{
 		bpconfig.LabelKey: bpconfig.LabelValue,
-		renderSourceLabel: repoKey(url),
+		renderSourceLabel: repo,
 	}); err != nil {
 		return fmt.Errorf("unable to list render sources: %w", err)
 	}
@@ -242,58 +241,30 @@ func (s *Server) deleteStaleRenderSources(ctx context.Context, namespace, url st
 	return nil
 }
 
-func (s *Server) downloadArtifact(ctx context.Context, url, digest string) ([]byte, error) {
-	if hostname := os.Getenv("SOURCE_CONTROLLER_LOCALHOST"); hostname != "" {
-		if i := strings.Index(url, "://"); i >= 0 {
-			rest := url[i+3:]
-			if j := strings.Index(rest, "/"); j >= 0 {
-				url = url[:i+3] + hostname + rest[j:]
-			}
-		}
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("unable to download artifact: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unable to download artifact from %s: %s", url, resp.Status)
-	}
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("unable to read artifact: %w", err)
-	}
-
-	if algo, want, ok := strings.Cut(digest, ":"); ok && algo == "sha256" {
-		sum := sha256.Sum256(data)
-		if got := hex.EncodeToString(sum[:]); got != want {
-			return nil, fmt.Errorf("artifact digest mismatch: want %s, got sha256:%s", digest, got)
-		}
-	}
-	return data, nil
-}
-
-// renderArchive builds the Kustomization from a source artifact the way
-// kustomize-controller does, and returns the Terraform objects it produces
-// and the repository paths the build read.
-func renderArchive(ctx context.Context, kubeClient client.Client, ks unstructured.Unstructured, archive []byte) (renderEntry, error) {
+// renderArtifact fetches a source artifact the way kustomize-controller does,
+// and renders the Kustomization from it.
+func renderArtifact(ctx context.Context, kubeClient client.Client, ks unstructured.Unstructured, url, digest string) (renderEntry, error) {
 	root, err := os.MkdirTemp("", "branch-planner-render-")
 	if err != nil {
 		return renderEntry{}, err
 	}
 	defer os.RemoveAll(root)
 
-	if err := tar.Untar(bytes.NewReader(archive), root, tar.WithMaxUntarSize(tar.UnlimitedUntarSize)); err != nil {
-		return renderEntry{}, fmt.Errorf("unable to extract artifact: %w", err)
+	fetcher := fetch.New(
+		fetch.WithRetries(3),
+		fetch.WithMaxDownloadSize(tar.UnlimitedUntarSize),
+		fetch.WithUntar(tar.WithMaxUntarSize(tar.UnlimitedUntarSize)),
+		fetch.WithHostnameOverwrite(os.Getenv("SOURCE_CONTROLLER_LOCALHOST")),
+	)
+	if err := fetcher.FetchWithContext(ctx, url, digest, root); err != nil {
+		return renderEntry{}, fmt.Errorf("unable to fetch artifact: %w", err)
 	}
 	return renderDir(ctx, kubeClient, ks, root)
 }
 
+// renderDir builds the Kustomization the way kustomize-controller does, and
+// returns the Terraform objects it produces and the repository paths the
+// build read.
 func renderDir(ctx context.Context, kubeClient client.Client, ks unstructured.Unstructured, root string) (renderEntry, error) {
 	// The secure filesystem resolves symlinks, so resolve root too, or the
 	// recorded paths would not be relative to it.
@@ -326,6 +297,8 @@ func renderDir(ctx context.Context, kubeClient client.Client, ks unstructured.Un
 	}
 
 	_, hasPostBuild, _ := unstructured.NestedMap(ks.Object, "spec", "postBuild")
+	strategy, _, _ := unstructured.NestedString(ks.Object, "spec", "postBuild", "substituteStrategy")
+	always := strategy == "Always"
 
 	entry := renderEntry{inputs: fs.read}
 	for _, res := range resMap.Resources() {
@@ -333,7 +306,7 @@ func renderDir(ctx context.Context, kubeClient client.Client, ks unstructured.Un
 			continue
 		}
 		if hasPostBuild {
-			substituted, err := kustomize.SubstituteVariables(ctx, kubeClient, ks, res)
+			substituted, err := kustomize.SubstituteVariables(ctx, kubeClient, ks, res, kustomize.SubstituteWithAlways(always))
 			if err != nil {
 				return renderEntry{}, fmt.Errorf("variable substitution failed for %s: %w", res.GetName(), err)
 			}
@@ -384,13 +357,13 @@ func (f *recordingFS) Open(path string) (filesys.File, error) {
 	return f.FileSystem.Open(path)
 }
 
-func normalizeURL(url string) string {
-	return strings.TrimSuffix(strings.TrimSuffix(strings.ToLower(url), "/"), ".git")
-}
-
-func repoKey(url string) string {
-	sum := sha256.Sum256([]byte(normalizeURL(url)))
-	return hex.EncodeToString(sum[:])[:16]
+// repoKey identifies a repository independent of how its URL is written.
+func repoKey(url string) (string, error) {
+	repo, err := provider.RepoFromURL(url)
+	if err != nil {
+		return "", err
+	}
+	return bpconfig.GenerateUniqueHash(strings.ToLower(repo.String())), nil
 }
 
 func renderSourceMeta(namespace, repo, prID string) metav1.ObjectMeta {
