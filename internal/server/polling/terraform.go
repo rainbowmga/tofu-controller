@@ -161,11 +161,10 @@ func (s *Server) reconcileSource(ctx context.Context, tfName string, originalSou
 
 		spec := originalSource.Spec.DeepCopy()
 
-		if spec.Reference != nil {
-			spec.Reference.Branch = branch
-		} else {
-			spec.Reference = &sourcev1.GitRepositoryRef{Branch: branch}
-		}
+		// Track only the PR branch. Flux resolves commit, name, semver and tag
+		// ahead of branch, so any of them copied from the original source would
+		// pin the plan to that ref instead of the pull request.
+		spec.Reference = &sourcev1.GitRepositoryRef{Branch: branch}
 		spec.Interval = metav1.Duration{
 			Duration: interval,
 		}
