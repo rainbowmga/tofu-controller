@@ -141,6 +141,11 @@ func (s *Server) reconcileTerraform(ctx context.Context, originalTF *infrav1.Ter
 
 		tf.SetLabels(branchLabels)
 
+		// The Flux event recorder forwards these annotations as event
+		// metadata, so alerts on a plan copy name the pull request it is for.
+		metav1.SetMetaDataAnnotation(&tf.ObjectMeta, bpconfig.AnnotationEventBranch, branch)
+		metav1.SetMetaDataAnnotation(&tf.ObjectMeta, bpconfig.AnnotationEventPullRequest, prID)
+
 		return nil
 	})
 	if err != nil {

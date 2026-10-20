@@ -24,6 +24,9 @@ const (
 	// commented on, so an update of the object does not comment on it again.
 	AnnotationCommentedPlanAt = "infra.weave.works/commented-plan-at"
 
+	AnnotationEventBranch      = "event.toolkit.fluxcd.io/branch"
+	AnnotationEventPullRequest = "event.toolkit.fluxcd.io/pull-request"
+
 	// DefaultNamespace will be used if RUNTIME_NAMESPACE is not defined.
 	DefaultNamespace       = "flux-system"
 	DefaultTokenSecretName = "branch-planner-token"

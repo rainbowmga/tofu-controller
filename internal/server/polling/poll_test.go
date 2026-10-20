@@ -202,6 +202,8 @@ func Test_poll_reconcile_objects(t *testing.T) {
 		g.Expect(item.Spec.WriteOutputsToSecret).To(gomega.BeNil()) // we don't need to use the output Secret of the plan
 		expectToEqual(t, g, item.Labels[bpconfig.LabelKey], bpconfig.LabelValue)
 		expectToEqual(t, g, item.Labels["test-label"], "abc")
+		expectToEqual(t, g, item.Annotations[bpconfig.AnnotationEventBranch], "test-branch-"+prID)
+		expectToEqual(t, g, item.Annotations[bpconfig.AnnotationEventPullRequest], prID)
 		expectToEqual(t, g, item.Spec.BackendConfig.SecretSuffix, original.Name)
 		expectToEqual(t, g, item.Spec.BackendConfig.InClusterConfig, true)
 	}
