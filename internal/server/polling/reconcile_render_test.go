@@ -62,7 +62,6 @@ func Test_reconcile_plansRenderedSpec(t *testing.T) {
 	rendered := original.DeepCopy()
 	rendered.Spec.Vars = []infrav1.Variable{{Name: "environment", Value: &apiextensionsv1.JSON{Raw: []byte(`"from-pull-request"`)}}}
 	rendered.Spec.ServiceAccountName = "kustomize-controller"
-	inputs := map[string]struct{}{"infrastructure/prod/stack.yaml": {}}
 	pending := map[string]bool{"2": true}
 
 	server, err := New(WithClusterClient(k8sClient))
@@ -72,16 +71,18 @@ func Test_reconcile_plansRenderedSpec(t *testing.T) {
 		case pending[prID]:
 			return nil, errRenderPending
 		case pr.Number == 3:
-			return &prRender{inputs: inputs}, nil
+			return &prRender{changed: true}, nil
+		case pr.Number == 4:
+			return &prRender{terraform: original.DeepCopy()}, nil
 		default:
-			return &prRender{terraform: rendered.DeepCopy(), inputs: inputs}, nil
+			return &prRender{terraform: rendered.DeepCopy(), changed: true}, nil
 		}
 	}
 
 	expectToSucceed(t, g, server.reconcile(ctx, original, source, prs, gitProvider))
 
 	copies := planCopies(t, g, ns.Name, original.Name)
-	g.Expect(copies).To(gomega.HaveLen(1), "only the manifest change is planned: #2 waits, #3 removes the stack, #4 is out of scope")
+	g.Expect(copies).To(gomega.HaveLen(1), "only the manifest change is planned: #2 waits, #3 removes the stack, #4 renders the stack as it is")
 	pr1 := copies["1"]
 	g.Expect(pr1).NotTo(gomega.BeNil())
 	g.Expect(pr1.Spec.Vars).To(gomega.HaveLen(1))

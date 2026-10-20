@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -17,13 +16,13 @@ import (
 	securefs "github.com/fluxcd/pkg/kustomize/filesys"
 	"github.com/fluxcd/pkg/tar"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/kustomize/kyaml/filesys"
 
 	infrav1 "github.com/flux-iac/tofu-controller/api/v1alpha2"
 	bpconfig "github.com/flux-iac/tofu-controller/internal/config"
@@ -50,15 +49,16 @@ var kustomizationGVK = schema.GroupVersionKind{
 var errRenderPending = errors.New("render source is not at the pull request head yet")
 
 // prRender is a Terraform object as a pull request would apply it, rendered
-// from the pull request revision of the Flux Kustomization that applies it,
-// and the repository paths that render read.
+// from the pull request revision of the Flux Kustomization that applies it.
+// changed reports whether what it plans differs from the same render at the
+// revision the Kustomization currently applies.
 type prRender struct {
 	terraform *infrav1.Terraform
-	inputs    map[string]struct{}
+	changed   bool
 }
 
-// renderCache keeps renders per Kustomization and pull request head, so the
-// stacks one Kustomization applies share a single download and build.
+// renderCache keeps renders per Kustomization and revision, so the stacks one
+// Kustomization applies share a single download and build.
 type renderCache struct {
 	mu      sync.Mutex
 	entries map[string]renderEntry
@@ -66,7 +66,15 @@ type renderCache struct {
 
 type renderEntry struct {
 	terraforms []*infrav1.Terraform
-	inputs     map[string]struct{}
+}
+
+func (e renderEntry) find(name, namespace string) *infrav1.Terraform {
+	for _, tf := range e.terraforms {
+		if tf.Name == name && (tf.Namespace == namespace || tf.Namespace == "") {
+			return tf
+		}
+	}
+	return nil
 }
 
 func (c *renderCache) get(key string) (renderEntry, bool) {
@@ -129,24 +137,53 @@ func (s *Server) renderForPullRequest(ctx context.Context, original *infrav1.Ter
 		return nil, errRenderPending
 	}
 
-	key := fmt.Sprintf("%s/%s@%s", ksNamespace, ksName, artifact.Revision)
-	entry, ok := s.renders.get(key)
-	if !ok {
-		entry, err = renderArtifact(ctx, s.clusterClient, *ks, artifact.URL, artifact.Digest)
-		if err != nil {
-			return nil, fmt.Errorf("unable to render Kustomization %s/%s at %s: %w", ksNamespace, ksName, artifact.Revision, err)
-		}
-		s.renders.put(key, entry)
+	head, err := s.renderRevision(ctx, ks, artifact)
+	if err != nil {
+		return nil, err
+	}
+	headTF := head.find(original.Name, original.Namespace)
+	if headTF == nil {
+		// The pull request removes this stack, so there is nothing to plan.
+		return &prRender{changed: true}, nil
 	}
 
-	for _, tf := range entry.terraforms {
-		if tf.Name == original.Name && (tf.Namespace == original.Namespace || tf.Namespace == "") {
-			return &prRender{terraform: tf.DeepCopy(), inputs: entry.inputs}, nil
-		}
+	// The stack in the cluster is what the Kustomization rendered from its own
+	// artifact, so that render is the baseline a pull request is compared to.
+	baseArtifact := ksSource.GetArtifact()
+	if baseArtifact == nil {
+		return nil, fmt.Errorf("source of Kustomization %s/%s has no artifact", ksNamespace, ksName)
 	}
+	base, err := s.renderRevision(ctx, ks, baseArtifact)
+	if err != nil {
+		return nil, err
+	}
+	baseTF := base.find(original.Name, original.Namespace)
 
-	// The pull request removes this stack, so there is nothing to plan.
-	return &prRender{inputs: entry.inputs}, nil
+	return &prRender{
+		terraform: headTF.DeepCopy(),
+		changed:   baseTF == nil || !plannedFieldsEqual(baseTF.Spec, headTF.Spec),
+	}, nil
+}
+
+// renderRevision builds the Kustomization from artifact, once per revision.
+func (s *Server) renderRevision(ctx context.Context, ks *unstructured.Unstructured, artifact *meta.Artifact) (renderEntry, error) {
+	key := fmt.Sprintf("%s/%s@%s", ks.GetNamespace(), ks.GetName(), artifact.Revision)
+	if entry, ok := s.renders.get(key); ok {
+		return entry, nil
+	}
+	entry, err := renderArtifact(ctx, s.clusterClient, *ks, artifact.URL, artifact.Digest)
+	if err != nil {
+		return renderEntry{}, fmt.Errorf("unable to render Kustomization %s/%s at %s: %w", ks.GetNamespace(), ks.GetName(), artifact.Revision, err)
+	}
+	s.renders.put(key, entry)
+	return entry, nil
+}
+
+// plannedFieldsEqual reports whether two specs would plan the same thing,
+// comparing only the fields a pull request can change.
+func plannedFieldsEqual(a, b infrav1.TerraformSpec) bool {
+	var none infrav1.TerraformSpec
+	return equality.Semantic.DeepEqual(plannedSpec(none, a), plannedSpec(none, b))
 }
 
 // plannedSpec is the spec to plan for a pull request: what the stack plans
@@ -279,16 +316,8 @@ func renderArtifact(ctx context.Context, kubeClient client.Client, ks unstructur
 }
 
 // renderDir builds the Kustomization the way kustomize-controller does, and
-// returns the Terraform objects it produces and the repository paths the
-// build read.
+// returns the Terraform objects it produces.
 func renderDir(ctx context.Context, kubeClient client.Client, ks unstructured.Unstructured, root string) (renderEntry, error) {
-	// The secure filesystem resolves symlinks, so resolve root too, or the
-	// recorded paths would not be relative to it.
-	root, err := filepath.EvalSymlinks(root)
-	if err != nil {
-		return renderEntry{}, err
-	}
-
 	path, _, _ := unstructured.NestedString(ks.Object, "spec", "path")
 	dirPath, err := securejoin.SecureJoin(root, path)
 	if err != nil {
@@ -302,11 +331,10 @@ func renderDir(ctx context.Context, kubeClient client.Client, ks unstructured.Un
 		return renderEntry{}, fmt.Errorf("unable to generate kustomization.yaml: %w", err)
 	}
 
-	disk, err := securefs.MakeFsOnDiskSecure(root)
+	fs, err := securefs.MakeFsOnDiskSecure(root)
 	if err != nil {
 		return renderEntry{}, err
 	}
-	fs := &recordingFS{FileSystem: disk, root: root, read: map[string]struct{}{}}
 	resMap, err := kustomize.Build(fs, dirPath)
 	if err != nil {
 		return renderEntry{}, fmt.Errorf("kustomize build failed: %w", err)
@@ -316,7 +344,7 @@ func renderDir(ctx context.Context, kubeClient client.Client, ks unstructured.Un
 	strategy, _, _ := unstructured.NestedString(ks.Object, "spec", "postBuild", "substituteStrategy")
 	always := strategy == "Always"
 
-	entry := renderEntry{inputs: fs.read}
+	var entry renderEntry
 	for _, res := range resMap.Resources() {
 		if res.GetKind() != infrav1.TerraformKind || !strings.HasPrefix(res.GetApiVersion(), infrav1.GroupVersion.Group+"/") {
 			continue
@@ -342,35 +370,6 @@ func renderDir(ctx context.Context, kubeClient client.Client, ks unstructured.Un
 		entry.terraforms = append(entry.terraforms, tf)
 	}
 	return entry, nil
-}
-
-// recordingFS records every file a kustomize build reads, as slash separated
-// paths relative to root, so a pull request can be matched against them.
-type recordingFS struct {
-	filesys.FileSystem
-	root string
-	mu   sync.Mutex
-	read map[string]struct{}
-}
-
-func (f *recordingFS) record(path string) {
-	rel, err := filepath.Rel(f.root, path)
-	if err != nil || strings.HasPrefix(rel, "..") {
-		return
-	}
-	f.mu.Lock()
-	f.read[filepath.ToSlash(rel)] = struct{}{}
-	f.mu.Unlock()
-}
-
-func (f *recordingFS) ReadFile(path string) ([]byte, error) {
-	f.record(path)
-	return f.FileSystem.ReadFile(path)
-}
-
-func (f *recordingFS) Open(path string) (filesys.File, error) {
-	f.record(path)
-	return f.FileSystem.Open(path)
 }
 
 // repoKey identifies a repository independent of how its URL is written.
