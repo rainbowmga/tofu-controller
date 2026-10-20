@@ -21,6 +21,9 @@ const (
 	AnnotationCommentIDKey  = "infra.weave.works/comment-id"
 	AnnotationErrorRevision = "infra.weave.works/error-revision"
 
+	AnnotationEventBranch      = "event.toolkit.fluxcd.io/branch"
+	AnnotationEventPullRequest = "event.toolkit.fluxcd.io/pull-request"
+
 	// DefaultNamespace will be used if RUNTIME_NAMESPACE is not defined.
 	DefaultNamespace       = "flux-system"
 	DefaultTokenSecretName = "branch-planner-token"
