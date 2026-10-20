@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"sync"
 	"text/template"
+	"time"
 
 	"github.com/flux-iac/tofu-controller/api/plan"
 	infrav1 "github.com/flux-iac/tofu-controller/api/v1alpha2"
@@ -181,7 +182,11 @@ func (i *Informer) updateHandler(oldObj, newObj any) {
 				return
 			}
 
-			i.addCommentToPullRequest(ctx, new, content)
+			if _, replaced := i.addCommentToPullRequest(ctx, new, content); replaced {
+				if err := i.patchAnnotations(ctx, new, nil, config.AnnotationCommentIDKey); err != nil {
+					i.log.Error(err, "failed removing comment id from object", "namespace", new.Namespace, "name", new.Name)
+				}
+			}
 
 			return
 		}
@@ -195,6 +200,16 @@ func (i *Informer) updateHandler(oldObj, newObj any) {
 
 	if !i.isNewPlan(old, new) {
 		i.log.Info("Plan not updated", "namespace", new.Namespace, "name", new.Name, "pr-id", new.Labels[config.LabelPRIDKey])
+
+		return
+	}
+
+	// The informer's previous object can lag behind the API server, so a
+	// plan already commented on would otherwise be commented on again by the
+	// next unrelated update of the object, such as the one this handler makes.
+	stamp := new.Status.LastPlanAt.UTC().Format(time.RFC3339)
+	if new.Annotations[config.AnnotationCommentedPlanAt] == stamp {
+		i.log.Info("Plan already commented", "namespace", new.Namespace, "name", new.Name, "pr-id", new.Labels[config.LabelPRIDKey])
 
 		return
 	}
@@ -220,16 +235,24 @@ func (i *Informer) updateHandler(oldObj, newObj any) {
 		return
 	}
 
-	i.addCommentToPullRequest(ctx, new, content)
+	if posted, _ := i.addCommentToPullRequest(ctx, new, content); posted {
+		set := map[string]string{config.AnnotationCommentedPlanAt: stamp}
+		if err := i.patchAnnotations(ctx, new, set, config.AnnotationCommentIDKey); err != nil {
+			i.log.Error(err, "failed marking the plan as commented", "namespace", new.Namespace, "name", new.Name)
+		}
+	}
 }
 
 func (i *Informer) deleteHandler(obj any) {}
 
-func (i *Informer) addCommentToPullRequest(ctx context.Context, tf *infrav1.Terraform, content []byte) {
+// addCommentToPullRequest posts content as a new comment, or as the new body
+// of the placeholder whose id the object carries. It reports whether a
+// comment was posted, and whether it replaced the placeholder.
+func (i *Informer) addCommentToPullRequest(ctx context.Context, tf *infrav1.Terraform, content []byte) (posted, replaced bool) {
 	repo, err := i.getRepo(ctx, tf)
 	if err != nil {
 		i.log.Error(err, "failed getting repository")
-		return
+		return false, false
 	}
 
 	prId, err := strconv.Atoi(tf.Labels[config.LabelPRIDKey])
@@ -252,19 +275,38 @@ func (i *Informer) addCommentToPullRequest(ctx context.Context, tf *infrav1.Terr
 	if commentID == 0 {
 		if _, err := i.gitProvider.AddCommentToPullRequest(ctx, pr, content); err != nil {
 			i.log.Error(err, "failed adding comment to pull request", "pr-id", tf.Labels[config.LabelPRIDKey], "namespace", tf.Namespace, "name", tf.Name)
+			return false, false
 		}
-		return
+		return true, false
 	}
 
 	if err := i.gitProvider.UpdateCommentOfPullRequest(ctx, pr, commentID, content); err != nil {
 		i.log.Error(err, "failed updating comment in pull request", "pr-id", tf.Labels[config.LabelPRIDKey], "comment-id", commentID, "namespace", tf.Namespace, "name", tf.Name)
 
-		return
+		return false, false
 	}
 
-	if err := i.removeCommentIDAnnotation(ctx, tf, commentID); err != nil {
-		i.log.Error(err, "failed removing comment id from object", "pr-id", tf.Labels[config.LabelPRIDKey], "comment-id", commentID, "namespace", tf.Namespace, "name", tf.Name)
+	return true, true
+}
+
+// patchAnnotations sets and removes annotations in one patch, so the single
+// update event it causes already carries the whole outcome.
+func (i *Informer) patchAnnotations(ctx context.Context, tf *infrav1.Terraform, set map[string]string, remove ...string) error {
+	patch := client.MergeFrom(tf.DeepCopy())
+
+	annotations := tf.GetAnnotations()
+	if annotations == nil {
+		annotations = map[string]string{}
 	}
+	for key, value := range set {
+		annotations[key] = value
+	}
+	for _, key := range remove {
+		delete(annotations, key)
+	}
+	tf.SetAnnotations(annotations)
+
+	return i.client.Patch(ctx, tf, patch)
 }
 
 func (i *Informer) addErrorAnnotation(ctx context.Context, tf *infrav1.Terraform) error {
@@ -278,20 +320,6 @@ func (i *Informer) addErrorAnnotation(ctx context.Context, tf *infrav1.Terraform
 		annotations[config.AnnotationErrorRevision] = tf.Status.LastAttemptedRevision
 		tf.SetAnnotations(annotations)
 	}
-
-	return i.client.Patch(ctx, tf, patch)
-}
-
-func (i *Informer) removeCommentIDAnnotation(ctx context.Context, tf *infrav1.Terraform, commentID int) error {
-	patch := client.MergeFrom(tf.DeepCopy())
-
-	annotations := tf.GetAnnotations()
-	if annotations == nil {
-		return nil
-	}
-
-	delete(annotations, config.AnnotationCommentIDKey)
-	tf.SetAnnotations(annotations)
 
 	return i.client.Patch(ctx, tf, patch)
 }

@@ -186,10 +186,14 @@ func (s *Server) poll(ctx context.Context, resource types.NamespacedName, secret
 }
 
 // pullRequestInScope reports whether a pull request changes what tf would
-// plan: its module, or with a render, any file the render of its
-// Kustomization read, such as the manifest that defines tf.
+// plan: its module, or with a render, the object its manifests define.
 func (s *Server) pullRequestInScope(ctx context.Context, tf *infrav1.Terraform, gitProvider provider.Provider, pr provider.PullRequest, render *prRender) bool {
 	if tf.Spec.BranchPlanner == nil || !tf.Spec.BranchPlanner.EnablePathScope {
+		return true
+	}
+
+	if render != nil && render.changed {
+		s.log.Info("has manifest changed", "PR ID", pr.Number, "name", tf.Name, "namespace", tf.Namespace)
 		return true
 	}
 
@@ -217,16 +221,24 @@ func (s *Server) pullRequestInScope(ctx context.Context, tf *infrav1.Terraform, 
 					return true
 				}
 			}
-			if render != nil {
-				if _, ok := render.inputs[path]; ok {
-					s.log.Info("has manifest changed", "path", path)
-					return true
-				}
-			}
 		}
 	}
 
 	return false
+}
+
+// replanSince is the time after which a "!replan" comment counts for a plan
+// copy: a comment that predates the copy, its last plan or a replan already
+// requested has been acted on, or never applied to it.
+func replanSince(tf *infrav1.Terraform) time.Time {
+	since := tf.CreationTimestamp.Time
+	if t := tf.Status.LastPlanAt; t != nil && t.After(since) {
+		since = t.Time
+	}
+	if t, err := time.Parse(time.RFC3339Nano, tf.Annotations[meta.ReconcileRequestAnnotation]); err == nil && t.After(since) {
+		since = t
+	}
+	return since
 }
 
 func (s *Server) reconcile(ctx context.Context, original *infrav1.Terraform, source *sourcev1.GitRepository, prs []provider.PullRequest, gitProvider provider.Provider) error {
@@ -321,14 +333,9 @@ func (s *Server) reconcile(ctx context.Context, original *infrav1.Terraform, sou
 			continue
 		}
 
-		lastPlanAt := time.Time{}
-		if tfPlannerObject.Status.LastPlanAt != nil {
-			lastPlanAt = tfPlannerObject.Status.LastPlanAt.Time
-		}
-
 		// check last comment, if it's "!replan" then trigger the replan action for the tfPlannerObject
 		log.Info("checking last comment...")
-		comments, err := gitProvider.GetLastComments(ctx, pr, lastPlanAt)
+		comments, err := gitProvider.GetLastComments(ctx, pr, replanSince(tfPlannerObject))
 		if err != nil {
 			log.Error(err, "failed to get last comment", "PR ID", prId)
 		}

@@ -169,10 +169,9 @@ func Test_renderDir(t *testing.T) {
 	g.Expect(other.Spec.StoreReadablePlan).To(gomega.Equal("human"))
 	g.Expect(varsOf(other)["literal"]).To(gomega.Equal(`"${NOT_SUBSTITUTED}"`), "substitution can be disabled per object")
 
-	g.Expect(entry.inputs).To(gomega.HaveKey("infrastructure/base/stack.yaml"))
-	g.Expect(entry.inputs).To(gomega.HaveKey("infrastructure/base/kustomization.yaml"))
-	g.Expect(entry.inputs).To(gomega.HaveKey("infrastructure/prod/other.yaml"))
-	g.Expect(entry.inputs).NotTo(gomega.HaveKey("infrastructure/unrelated/kustomization.yaml"))
+	g.Expect(entry.find("stack", "flux-system")).To(gomega.Equal(stack))
+	g.Expect(entry.find("stack", "other-namespace")).To(gomega.BeNil())
+	g.Expect(entry.find("missing", "flux-system")).To(gomega.BeNil())
 }
 
 func Test_renderDir_missingPath(t *testing.T) {
@@ -245,12 +244,10 @@ func Test_pullRequestInScope(t *testing.T) {
 			BranchPlanner: &infrav1.BranchPlanner{EnablePathScope: true},
 		},
 	}
-	render := &prRender{
-		terraform: tf.DeepCopy(),
-		inputs: map[string]struct{}{
-			"infrastructure/prod/stack.yaml": {},
-		},
-	}
+	changed := &prRender{terraform: tf.DeepCopy(), changed: true}
+	unchanged := &prRender{terraform: tf.DeepCopy()}
+	moved := &prRender{terraform: tf.DeepCopy()}
+	moved.terraform.Spec.Path = "./tofu/modules/moved"
 
 	cases := []struct {
 		name    string
@@ -259,10 +256,12 @@ func Test_pullRequestInScope(t *testing.T) {
 		want    bool
 	}{
 		{"module change", []provider.Change{{Path: "tofu/modules/stack/main.tf"}}, nil, true},
-		{"manifest change is planned with a render", []provider.Change{{Path: "infrastructure/prod/stack.yaml"}}, render, true},
+		{"module change with an unchanged render", []provider.Change{{Path: "tofu/modules/stack/main.tf"}}, unchanged, true},
+		{"rendered object changed", []provider.Change{{Path: "infrastructure/prod/stack.yaml"}}, changed, true},
 		{"manifest change needs a render", []provider.Change{{Path: "infrastructure/prod/stack.yaml"}}, nil, false},
-		{"renamed manifest", []provider.Change{{Path: "infrastructure/prod/renamed.yaml", PreviousPath: "infrastructure/prod/stack.yaml"}}, render, true},
-		{"unrelated change", []provider.Change{{Path: "docs/readme.md"}}, render, false},
+		{"manifest change that leaves this object as is", []provider.Change{{Path: "infrastructure/prod/other.yaml"}}, unchanged, false},
+		{"change to the module the pull request points at", []provider.Change{{Path: "tofu/modules/moved/main.tf"}}, moved, true},
+		{"unrelated change", []provider.Change{{Path: "docs/readme.md"}}, unchanged, false},
 	}
 
 	for _, c := range cases {
@@ -310,4 +309,29 @@ func Test_plannedSpec(t *testing.T) {
 	g.Expect(got.Webhooks).To(gomega.Equal(original.Webhooks))
 	g.Expect(got.RunnerPodTemplate.Spec.Image).To(gomega.BeEmpty())
 	g.Expect(got.RunnerPodTemplate.Spec.Volumes).To(gomega.BeEmpty())
+}
+
+func Test_plannedFieldsEqual(t *testing.T) {
+	g := gomega.NewWithT(t)
+	base := infrav1.TerraformSpec{
+		Path: "./tofu/modules/stack",
+		Vars: []infrav1.Variable{{Name: "environment", Value: &apiextensionsv1.JSON{Raw: []byte(`"live"`)}}},
+	}
+
+	same := *base.DeepCopy()
+	same.ServiceAccountName = "other"
+	same.Interval = metav1.Duration{Duration: 1}
+	g.Expect(plannedFieldsEqual(base, same)).To(gomega.BeTrue(), "fields a pull request cannot change do not count")
+
+	vars := *base.DeepCopy()
+	vars.Vars[0].Value = &apiextensionsv1.JSON{Raw: []byte(`"pr"`)}
+	g.Expect(plannedFieldsEqual(base, vars)).To(gomega.BeFalse())
+
+	destroy := *base.DeepCopy()
+	destroy.Destroy = true
+	g.Expect(plannedFieldsEqual(base, destroy)).To(gomega.BeFalse())
+
+	empty := *base.DeepCopy()
+	empty.Targets = []string{}
+	g.Expect(plannedFieldsEqual(base, empty)).To(gomega.BeTrue(), "nil and empty lists are the same")
 }
