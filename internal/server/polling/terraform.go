@@ -82,7 +82,10 @@ func (s *Server) getSource(ctx context.Context, tf *infrav1.Terraform) (*sourcev
 	return obj, nil
 }
 
-func (s *Server) reconcileTerraform(ctx context.Context, originalTF *infrav1.Terraform, originalSource *sourcev1.GitRepository, branch string, prID string, interval time.Duration) error {
+// reconcileTerraform creates or updates the plan-only copy of originalTF for
+// a pull request. spec is what the pull request would apply, which is the
+// in-cluster spec when it could not be rendered.
+func (s *Server) reconcileTerraform(ctx context.Context, originalTF *infrav1.Terraform, spec infrav1.TerraformSpec, originalSource *sourcev1.GitRepository, branch string, prID string, interval time.Duration) error {
 	tfName := config.PullRequestObjectName(originalTF.Name, prID)
 	msg := fmt.Sprintf("Terraform object %s in the namespace %s", tfName, originalTF.Namespace)
 	source, err := s.reconcileSource(ctx, originalTF.Name, originalSource, branch, prID, interval)
@@ -99,7 +102,7 @@ func (s *Server) reconcileTerraform(ctx context.Context, originalTF *infrav1.Ter
 
 	branchLabels := s.createLabels(originalTF.Labels, originalTF.Name, branch, prID)
 	op, err := controllerutil.CreateOrUpdate(ctx, s.clusterClient, tf, func() error {
-		spec := originalTF.Spec.DeepCopy()
+		spec := spec.DeepCopy()
 
 		spec.SourceRef.Name = source.Name
 		spec.SourceRef.Namespace = source.Namespace
@@ -107,6 +110,11 @@ func (s *Server) reconcileTerraform(ctx context.Context, originalTF *infrav1.Ter
 		// DestroyResourcesOnDeletion must be false, otherwise plan deletion will destroy resources
 		spec.DestroyResourcesOnDeletion = false
 		spec.PlanOnly = true
+
+		// A plan copy only reads state, so it must not hold the lock the
+		// stack itself needs to apply.
+		lock := false
+		spec.Plan = &infrav1.PlanSpec{Lock: &lock}
 		spec.StoreReadablePlan = "human"
 
 		// We don't need to examine or use the outputs of the plan
