@@ -20,6 +20,9 @@ const (
 	LabelPrimaryResourceKey = "infra.weave.works/primary-resource"
 	AnnotationCommentIDKey  = "infra.weave.works/comment-id"
 	AnnotationErrorRevision = "infra.weave.works/error-revision"
+	// AnnotationCommentedPlanAt is the LastPlanAt of the plan the informer last
+	// commented on, so an update of the object does not comment on it again.
+	AnnotationCommentedPlanAt = "infra.weave.works/commented-plan-at"
 
 	// DefaultNamespace will be used if RUNTIME_NAMESPACE is not defined.
 	DefaultNamespace       = "flux-system"

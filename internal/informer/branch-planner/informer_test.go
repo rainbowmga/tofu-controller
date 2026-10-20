@@ -124,6 +124,29 @@ func TestInformer(t *testing.T) {
 		_, _, body := gitProvider.AddCommentToPullRequestArgsForCall(0)
 		return string(body)
 	}).Should(gom.ContainSubstring("terraform plan output"))
+
+	// The comment is recorded on the object, so later updates of the object,
+	// including that record, do not post the same plan again.
+	g.Eventually(func() string {
+		k8sClient.Get(ctx, client.ObjectKeyFromObject(tf), tf)
+		return tf.Annotations[config.AnnotationCommentedPlanAt]
+	}).Should(gom.Equal(tf.Status.LastPlanAt.UTC().Format(time.RFC3339)))
+
+	patch = client.MergeFrom(tf.DeepCopy())
+	tf.Annotations["poke"] = "1"
+	expectToSucceed(t, g, k8sClient.Patch(ctx, tf, patch))
+	g.Consistently(func() int {
+		return gitProvider.AddCommentToPullRequestCallCount()
+	}, "2s").Should(gom.Equal(1))
+
+	// A newer plan is commented on.
+	k8sClient.Get(ctx, client.ObjectKeyFromObject(tf), tf)
+	patch = client.MergeFrom(tf.DeepCopy())
+	tf.Status.LastPlanAt = &metav1.Time{Time: time.Now().Add(2 * time.Second)}
+	expectToSucceed(t, g, k8sClient.Status().Patch(ctx, tf, patch))
+	g.Eventually(func() int {
+		return gitProvider.AddCommentToPullRequestCallCount()
+	}).Should(gom.Equal(2))
 }
 
 // A failed plan must be reported on the pull request, like a failed init.
