@@ -176,7 +176,7 @@ func (i *Informer) updateHandler(oldObj, newObj any) {
 				return
 			}
 
-			content, err := formatErrorOutput(condition.Message)
+			content, err := formatErrorOutput(stackName(new), condition.Message)
 			if err != nil {
 				i.log.Error(err, "failed to format error output")
 				return
@@ -229,7 +229,7 @@ func (i *Informer) updateHandler(oldObj, newObj any) {
 
 	i.log.Info("Updated plan", "pr-id", new.Labels[config.LabelPRIDKey])
 
-	content, err := formatPlanOutput(plan)
+	content, err := formatPlanOutput(stackName(new), plan)
 	if err != nil {
 		i.log.Error(err, "failed to format plan output")
 		return
@@ -393,8 +393,17 @@ func (i *Informer) getRepo(ctx context.Context, tf *infrav1.Terraform) (provider
 	return provider.RepoFromURL(obj.Spec.URL)
 }
 
-func formatPlanOutput(planOutput string) ([]byte, error) {
-	data := struct{ PlanOutput string }{PlanOutput: planOutput}
+// stackName is the stack a plan copy plans for, as named in the comments, so
+// a pull request that plans several stacks reads as several plans.
+func stackName(tf *infrav1.Terraform) string {
+	if name := tf.Labels[config.LabelPrimaryResourceKey]; name != "" {
+		return name
+	}
+	return tf.Name
+}
+
+func formatPlanOutput(stack, planOutput string) ([]byte, error) {
+	data := struct{ Stack, PlanOutput string }{Stack: stack, PlanOutput: planOutput}
 
 	var buf bytes.Buffer
 	if err := parsedPlanTemplate.Execute(&buf, data); err != nil {
@@ -404,8 +413,8 @@ func formatPlanOutput(planOutput string) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func formatErrorOutput(message string) ([]byte, error) {
-	data := struct{ ErrorMessage string }{ErrorMessage: message}
+func formatErrorOutput(stack, message string) ([]byte, error) {
+	data := struct{ Stack, ErrorMessage string }{Stack: stack, ErrorMessage: message}
 
 	var buf bytes.Buffer
 	if err := parsedErrorTemplate.Execute(&buf, data); err != nil {

@@ -48,8 +48,9 @@ func TestInformer(t *testing.T) {
 			Name:      "helloworld",
 			Namespace: ns.Name,
 			Labels: map[string]string{
-				config.LabelKey:           config.LabelValue,
-				"infra.weave.works/pr-id": "1",
+				config.LabelKey:                config.LabelValue,
+				"infra.weave.works/pr-id":      "1",
+				config.LabelPrimaryResourceKey: "helloworld-stack",
 			},
 		},
 		Spec: infrav1.TerraformSpec{
@@ -123,7 +124,7 @@ func TestInformer(t *testing.T) {
 	g.Eventually(func() string {
 		_, _, body := gitProvider.AddCommentToPullRequestArgsForCall(0)
 		return string(body)
-	}).Should(gom.ContainSubstring("terraform plan output"))
+	}).Should(gom.And(gom.ContainSubstring("plan output for `helloworld-stack`"), gom.ContainSubstring("terraform plan output")))
 
 	// The comment is recorded on the object, so later updates of the object,
 	// including that record, do not post the same plan again.
@@ -174,8 +175,9 @@ func TestInformer_planFailurePostsError(t *testing.T) {
 			Name:      "helloworld",
 			Namespace: ns.Name,
 			Labels: map[string]string{
-				config.LabelKey:           config.LabelValue,
-				"infra.weave.works/pr-id": "1",
+				config.LabelKey:                config.LabelValue,
+				"infra.weave.works/pr-id":      "1",
+				config.LabelPrimaryResourceKey: "helloworld-stack",
 			},
 		},
 		Spec: infrav1.TerraformSpec{
@@ -227,7 +229,7 @@ func TestInformer_planFailurePostsError(t *testing.T) {
 	}).Should(gom.Equal(1))
 
 	_, _, body := gitProvider.AddCommentToPullRequestArgsForCall(0)
-	g.Expect(string(body)).To(gom.ContainSubstring("encountered an error generating plan"))
+	g.Expect(string(body)).To(gom.ContainSubstring("encountered an error generating plan for `helloworld-stack`"))
 	g.Expect(string(body)).To(gom.ContainSubstring("Resource instance cannot be destroyed"))
 }
 

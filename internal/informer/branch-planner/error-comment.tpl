@@ -1,4 +1,4 @@
-tf-controller encountered an error generating plan:
+tf-controller encountered an error generating plan for `{{.Stack}}`:
 
 ```
 {{ .ErrorMessage }}

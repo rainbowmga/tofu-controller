@@ -345,7 +345,7 @@ func (s *Server) reconcile(ctx context.Context, original *infrav1.Terraform, sou
 			if comment != nil && strings.Contains(comment.Body, "!replan") {
 				log.Info("last comment contains '!replan', triggering replan action...")
 
-				placeholderComment, err := gitProvider.AddCommentToPullRequest(ctx, pr, []byte("Planning in progress..."))
+				placeholderComment, err := gitProvider.AddCommentToPullRequest(ctx, pr, []byte(fmt.Sprintf("Planning `%s` in progress...", original.Name)))
 				if err != nil {
 					log.Error(err, "failed to add comment to pull request", "PR ID", prId)
 				} else {

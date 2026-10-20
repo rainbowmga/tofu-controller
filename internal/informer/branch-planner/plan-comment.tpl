@@ -1,4 +1,4 @@
-tf-controller plan output:
+tf-controller plan output for `{{.Stack}}`:
 
 ```hcl
 {{.PlanOutput}}
