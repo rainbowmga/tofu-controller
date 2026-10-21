@@ -50,6 +50,32 @@ func (p *GitHubProvider) ListPullRequestChanges(ctx context.Context, pr PullRequ
 	return changes, nil
 }
 
+// GetPullRequest fetches one pull request. Unlike the list, this makes GitHub
+// compute the merge of the pull request and report whether it conflicts.
+func (p *GitHubProvider) GetPullRequest(ctx context.Context, repo Repository, number int) (PullRequest, error) {
+	pr, _, err := p.client.PullRequests.Find(ctx, repo.String(), number)
+	if err != nil {
+		return PullRequest{}, fmt.Errorf("failed to get pull request %d: %w", number, err)
+	}
+	return githubPullRequest(repo, pr), nil
+}
+
+func githubPullRequest(repo Repository, pr *scm.PullRequest) PullRequest {
+	return PullRequest{
+		Repository:  repo,
+		Number:      pr.Number,
+		BaseBranch:  pr.Base.Ref,
+		HeadBranch:  pr.Head.Ref,
+		BaseSha:     pr.Base.Sha,
+		HeadSha:     pr.Head.Sha,
+		Closed:      pr.Closed,
+		Link:        pr.Link,
+		MergeRef:    fmt.Sprintf("refs/pull/%d/merge", pr.Number),
+		MergeSha:    pr.MergeSha,
+		Conflicting: pr.MergeableState == scm.MergeableStateConflicting,
+	}
+}
+
 func (p *GitHubProvider) ListPullRequests(ctx context.Context, repo Repository) ([]PullRequest, error) {
 	var prs []PullRequest
 
@@ -61,16 +87,7 @@ func (p *GitHubProvider) ListPullRequests(ctx context.Context, repo Repository) 
 		}
 
 		for _, pr := range prList {
-			prs = append(prs, PullRequest{
-				Repository: repo,
-				Number:     pr.Number,
-				BaseBranch: pr.Base.Ref,
-				HeadBranch: pr.Head.Ref,
-				BaseSha:    pr.Base.Sha,
-				HeadSha:    pr.Head.Sha,
-				Closed:     pr.Closed,
-				Link:       pr.Link,
-			})
+			prs = append(prs, githubPullRequest(repo, pr))
 		}
 
 		if res.Page.Next == 0 || opts.Page >= maxPages {

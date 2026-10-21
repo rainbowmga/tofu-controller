@@ -45,8 +45,26 @@ var kustomizationGVK = schema.GroupVersionKind{
 }
 
 // errRenderPending means the pull request's render source has not fetched the
-// head of the pull request yet.
-var errRenderPending = errors.New("render source is not at the pull request head yet")
+// revision the pull request is planned from yet.
+var errRenderPending = errors.New("render source is not at the planned revision yet")
+
+// planRef is where a pull request is planned from: the provider's merge of
+// the pull request onto its base when it has one, so the plan shows what
+// merging would apply instead of reverting what the base gained since the
+// branch point, and the head branch otherwise.
+func planRef(pr provider.PullRequest) sourcev1.GitRepositoryRef {
+	if pr.MergeRef != "" && pr.MergeSha != "" {
+		return sourcev1.GitRepositoryRef{Name: pr.MergeRef}
+	}
+	return sourcev1.GitRepositoryRef{Branch: pr.HeadBranch}
+}
+
+func planSha(pr provider.PullRequest) string {
+	if pr.MergeRef != "" && pr.MergeSha != "" {
+		return pr.MergeSha
+	}
+	return pr.HeadSha
+}
 
 // prRender is a Terraform object as a pull request would apply it, rendered
 // from the pull request revision of the Flux Kustomization that applies it.
@@ -125,13 +143,13 @@ func (s *Server) renderForPullRequest(ctx context.Context, original *infrav1.Ter
 		return nil, nil
 	}
 
-	renderSource, err := s.reconcileRenderSource(ctx, ksSource, ksRepo, pr.HeadBranch, prID)
+	renderSource, err := s.reconcileRenderSource(ctx, ksSource, ksRepo, planRef(pr), prID)
 	if err != nil {
 		return nil, err
 	}
 	artifact := renderSource.GetArtifact()
-	if artifact == nil || !strings.HasSuffix(artifact.Revision, pr.HeadSha) {
-		if err := s.requestReconcile(ctx, renderSource, pr.HeadSha); err != nil {
+	if artifact == nil || !strings.HasSuffix(artifact.Revision, planSha(pr)) {
+		if err := s.requestReconcile(ctx, renderSource, planSha(pr)); err != nil {
 			return nil, err
 		}
 		return nil, errRenderPending
@@ -221,15 +239,16 @@ func (s *Server) kustomizationSource(ctx context.Context, ks *unstructured.Unstr
 }
 
 // reconcileRenderSource keeps one source per repository and pull request,
-// tracking the pull request branch, for rendering Kustomizations.
-func (s *Server) reconcileRenderSource(ctx context.Context, ksSource *sourcev1.GitRepository, repo, branch, prID string) (*sourcev1.GitRepository, error) {
+// tracking the revision the pull request is planned from, for rendering
+// Kustomizations.
+func (s *Server) reconcileRenderSource(ctx context.Context, ksSource *sourcev1.GitRepository, repo string, ref sourcev1.GitRepositoryRef, prID string) (*sourcev1.GitRepository, error) {
 	src := &sourcev1.GitRepository{
 		ObjectMeta: renderSourceMeta(ksSource.Namespace, repo, prID),
 	}
 
 	_, err := controllerutil.CreateOrUpdate(ctx, s.clusterClient, src, func() error {
 		spec := ksSource.Spec.DeepCopy()
-		spec.Reference = &sourcev1.GitRepositoryRef{Branch: branch}
+		spec.Reference = &ref
 		spec.Interval.Duration = s.branchPollingInterval
 		if spec.Interval.Duration == 0 {
 			spec.Interval.Duration = time.Minute

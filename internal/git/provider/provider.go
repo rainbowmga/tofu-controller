@@ -42,6 +42,7 @@ type URLParserFn = func(repoURL string, options ...ProviderOption) (Provider, Re
 
 type Provider interface {
 	ListPullRequests(ctx context.Context, repo Repository) ([]PullRequest, error)
+	GetPullRequest(ctx context.Context, repo Repository, number int) (PullRequest, error)
 	AddCommentToPullRequest(ctx context.Context, repo PullRequest, body []byte) (*Comment, error)
 	GetLastComments(ctx context.Context, pr PullRequest, since time.Time) ([]*Comment, error)
 	UpdateCommentOfPullRequest(ctx context.Context, pr PullRequest, commentID int, body []byte) error

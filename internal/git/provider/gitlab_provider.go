@@ -50,6 +50,23 @@ func (p *GitLabProvider) ListPullRequestChanges(ctx context.Context, pr PullRequ
 	return changes, nil
 }
 
+func (p *GitLabProvider) GetPullRequest(ctx context.Context, repo Repository, number int) (PullRequest, error) {
+	pr, _, err := p.client.PullRequests.Find(ctx, repo.String(), number)
+	if err != nil {
+		return PullRequest{}, fmt.Errorf("failed to get pull request %d: %w", number, err)
+	}
+	return PullRequest{
+		Repository: repo,
+		Number:     pr.Number,
+		BaseBranch: pr.Base.Ref,
+		HeadBranch: pr.Head.Ref,
+		BaseSha:    pr.Base.Sha,
+		HeadSha:    pr.Head.Sha,
+		Closed:     pr.Closed,
+		Link:       pr.Link,
+	}, nil
+}
+
 func (p *GitLabProvider) ListPullRequests(ctx context.Context, repo Repository) ([]PullRequest, error) {
 	var prs []PullRequest
 
