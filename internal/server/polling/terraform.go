@@ -18,6 +18,7 @@ import (
 
 	"github.com/flux-iac/tofu-controller/internal/config"
 	bpconfig "github.com/flux-iac/tofu-controller/internal/config"
+	"github.com/flux-iac/tofu-controller/internal/git/provider"
 
 	infrav1 "github.com/flux-iac/tofu-controller/api/v1alpha2"
 )
@@ -85,7 +86,8 @@ func (s *Server) getSource(ctx context.Context, tf *infrav1.Terraform) (*sourcev
 // reconcileTerraform creates or updates the plan-only copy of originalTF for
 // a pull request. spec is what the pull request would apply, which is the
 // in-cluster spec when it could not be rendered.
-func (s *Server) reconcileTerraform(ctx context.Context, originalTF *infrav1.Terraform, spec infrav1.TerraformSpec, originalSource *sourcev1.GitRepository, branch string, prID string, interval time.Duration) error {
+func (s *Server) reconcileTerraform(ctx context.Context, originalTF *infrav1.Terraform, spec infrav1.TerraformSpec, originalSource *sourcev1.GitRepository, pr provider.PullRequest, prID string, interval time.Duration) error {
+	branch := pr.HeadBranch
 	tfName := config.PullRequestObjectName(originalTF.Name, prID)
 	msg := fmt.Sprintf("Terraform object %s in the namespace %s", tfName, originalTF.Namespace)
 	source, err := s.reconcileSource(ctx, originalTF.Name, originalSource, branch, prID, interval)
@@ -145,6 +147,17 @@ func (s *Server) reconcileTerraform(ctx context.Context, originalTF *infrav1.Ter
 		// metadata, so alerts on a plan copy name the pull request it is for.
 		metav1.SetMetaDataAnnotation(&tf.ObjectMeta, bpconfig.AnnotationEventBranch, branch)
 		metav1.SetMetaDataAnnotation(&tf.ObjectMeta, bpconfig.AnnotationEventPullRequest, prID)
+		if pr.Link != "" {
+			metav1.SetMetaDataAnnotation(&tf.ObjectMeta, bpconfig.AnnotationEventPullRequestURL, pr.Link)
+		}
+
+		// An acknowledged failure keeps the copy suspended while the pull
+		// request head it was acknowledged at is still the head. The record
+		// stays once the head moves, so the comment it came from is not acted
+		// on again.
+		if acked := tf.Annotations[bpconfig.AnnotationAcknowledgedRevision]; acked != "" && acked == pr.HeadSha {
+			tf.Spec.Suspend = true
+		}
 
 		return nil
 	})

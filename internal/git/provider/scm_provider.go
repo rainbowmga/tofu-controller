@@ -115,6 +115,7 @@ func (p *scmProvider) ListPullRequests(ctx context.Context, repo Repository) ([]
 				BaseSha:    pr.Base.Sha,
 				HeadSha:    pr.Head.Sha,
 				Closed:     pr.Closed,
+				Link:       pr.Link,
 			})
 		}
 
