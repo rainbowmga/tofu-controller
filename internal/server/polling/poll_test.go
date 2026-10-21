@@ -150,18 +150,21 @@ func Test_poll_reconcile_objects(t *testing.T) {
 			Number:     1,
 			BaseBranch: "main",
 			HeadBranch: "test-branch-1",
+			Link:       "https://github.com/fake-org/fake-name/pull/1",
 		},
 		{
 			Repository: repo,
 			Number:     2,
 			BaseBranch: "main",
 			HeadBranch: "test-branch-2",
+			Link:       "https://github.com/fake-org/fake-name/pull/2",
 		},
 		{
 			Repository: repo,
 			Number:     3,
 			BaseBranch: "main",
 			HeadBranch: "test-branch-3",
+			Link:       "https://github.com/fake-org/fake-name/pull/3",
 		},
 	}
 
@@ -204,6 +207,7 @@ func Test_poll_reconcile_objects(t *testing.T) {
 		expectToEqual(t, g, item.Labels["test-label"], "abc")
 		expectToEqual(t, g, item.Annotations[bpconfig.AnnotationEventBranch], "test-branch-"+prID)
 		expectToEqual(t, g, item.Annotations[bpconfig.AnnotationEventPullRequest], prID)
+		expectToEqual(t, g, item.Annotations[bpconfig.AnnotationEventPullRequestURL], "https://github.com/fake-org/fake-name/pull/"+prID)
 		expectToEqual(t, g, item.Spec.BackendConfig.SecretSuffix, original.Name)
 		expectToEqual(t, g, item.Spec.BackendConfig.InClusterConfig, true)
 	}
@@ -339,6 +343,7 @@ func Test_poll_noPathChanges(t *testing.T) {
 			Number:     1,
 			BaseBranch: "main",
 			HeadBranch: "test-branch-1",
+			Link:       "https://github.com/fake-org/fake-name/pull/1",
 		},
 	}
 	prChanges := []provider.Change{

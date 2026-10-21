@@ -7,5 +7,6 @@ type PullRequest struct {
 	HeadBranch string
 	BaseSha    string
 	HeadSha    string
+	Link       string
 	Closed     bool
 }

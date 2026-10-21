@@ -11,5 +11,7 @@ Branch `rainbow/v0.16.5` is upstream `v0.16.5` plus the patches below. Only the 
 - `!replan` is acted on once: a comment older than the plan copy, its last plan or a replan already requested is ignored, instead of posting "Planning in progress..." on every poll until the plan completes.
 - A plan is commented on once: the informer records the plan time it commented on in an `infra.weave.works/commented-plan-at` annotation on the plan copy, so its own annotation writes and other updates of the object no longer post the same plan again. The record is on the object, so a controller restart keeps it.
 - Branch planner plan copies carry `event.toolkit.fluxcd.io/branch` and `event.toolkit.fluxcd.io/pull-request` annotations, so Flux alerts on a failed pull request plan name the branch and pull request.
+- Plan copies also carry `event.toolkit.fluxcd.io/pull-request-url`, so those alerts link to the pull request.
+- `!ack` on a pull request suspends the failing plan copy at the current head: no retries and no alerts until new commits arrive, or until `!replan`. The planner confirms the acknowledgement with one comment.
 
 The fixes are meant to go upstream; drop each patch once a release includes it.

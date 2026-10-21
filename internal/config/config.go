@@ -24,8 +24,13 @@ const (
 	// commented on, so an update of the object does not comment on it again.
 	AnnotationCommentedPlanAt = "infra.weave.works/commented-plan-at"
 
-	AnnotationEventBranch      = "event.toolkit.fluxcd.io/branch"
-	AnnotationEventPullRequest = "event.toolkit.fluxcd.io/pull-request"
+	AnnotationEventBranch         = "event.toolkit.fluxcd.io/branch"
+	AnnotationEventPullRequest    = "event.toolkit.fluxcd.io/pull-request"
+	AnnotationEventPullRequestURL = "event.toolkit.fluxcd.io/pull-request-url"
+	// AnnotationAcknowledgedRevision is the pull request head a "!ack" comment
+	// acknowledged a failed plan for; the plan copy stays suspended at it.
+	AnnotationAcknowledgedRevision = "infra.weave.works/acknowledged-revision"
+	AnnotationAcknowledgedAt       = "infra.weave.works/acknowledged-at"
 
 	// DefaultNamespace will be used if RUNTIME_NAMESPACE is not defined.
 	DefaultNamespace       = "flux-system"

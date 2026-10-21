@@ -227,16 +227,19 @@ func (s *Server) pullRequestInScope(ctx context.Context, tf *infrav1.Terraform, 
 	return false
 }
 
-// replanSince is the time after which a "!replan" comment counts for a plan
-// copy: a comment that predates the copy, its last plan or a replan already
-// requested has been acted on, or never applied to it.
-func replanSince(tf *infrav1.Terraform) time.Time {
+// commandSince is the time after which a "!replan" or "!ack" comment counts
+// for a plan copy: a comment that predates the copy, its last plan, or a
+// replan or acknowledgement already acted on has been handled, or never
+// applied to it.
+func commandSince(tf *infrav1.Terraform) time.Time {
 	since := tf.CreationTimestamp.Time
 	if t := tf.Status.LastPlanAt; t != nil && t.After(since) {
 		since = t.Time
 	}
-	if t, err := time.Parse(time.RFC3339Nano, tf.Annotations[meta.ReconcileRequestAnnotation]); err == nil && t.After(since) {
-		since = t
+	for _, key := range []string{meta.ReconcileRequestAnnotation, bpconfig.AnnotationAcknowledgedAt} {
+		if t, err := time.Parse(time.RFC3339Nano, tf.Annotations[key]); err == nil && t.After(since) {
+			since = t
+		}
 	}
 	return since
 }
@@ -290,7 +293,7 @@ func (s *Server) reconcile(ctx context.Context, original *infrav1.Terraform, sou
 
 		// Reconcile the Terraform objects related to each PR.
 		// If an error occurs, log it and continue with the next PR.
-		if err := s.reconcileTerraform(ctx, original, spec, source, pr.HeadBranch, prId, s.branchPollingInterval); err != nil {
+		if err := s.reconcileTerraform(ctx, original, spec, source, pr, prId, s.branchPollingInterval); err != nil {
 			log.Error(err, "failed to reconcile Terraform object for PR", "PR ID", prId)
 		} else {
 			log.Info("successfully reconciled Terraform object for PR", "PR ID", prId)
@@ -333,16 +336,20 @@ func (s *Server) reconcile(ctx context.Context, original *infrav1.Terraform, sou
 			continue
 		}
 
-		// check last comment, if it's "!replan" then trigger the replan action for the tfPlannerObject
+		// The newest "!replan" or "!ack" comment since the copy last acted
+		// decides what happens to it.
 		log.Info("checking last comment...")
-		comments, err := gitProvider.GetLastComments(ctx, pr, replanSince(tfPlannerObject))
+		comments, err := gitProvider.GetLastComments(ctx, pr, commandSince(tfPlannerObject))
 		if err != nil {
 			log.Error(err, "failed to get last comment", "PR ID", prId)
 		}
 
 		// it was sorted by created time desc
 		for _, comment := range comments {
-			if comment != nil && strings.Contains(comment.Body, "!replan") {
+			if comment == nil {
+				continue
+			}
+			if strings.Contains(comment.Body, "!replan") {
 				log.Info("last comment contains '!replan', triggering replan action...")
 
 				placeholderComment, err := gitProvider.AddCommentToPullRequest(ctx, pr, []byte(fmt.Sprintf("Planning `%s` in progress...", original.Name)))
@@ -358,7 +365,20 @@ func (s *Server) reconcile(ctx context.Context, original *infrav1.Terraform, sou
 					log.Info("successfully triggered replan", "PR ID", prId)
 				}
 
-				// found one comment with "!replan", no need to check the rest
+				break
+			}
+			if strings.Contains(comment.Body, "!ack") {
+				log.Info("last comment contains '!ack', suspending the plan until the pull request changes...")
+
+				if err := s.acknowledgeTerraform(ctx, tfPlannerObject, pr.HeadSha); err != nil {
+					log.Error(err, "failed to acknowledge the plan", "PR ID", prId)
+					break
+				}
+				body := fmt.Sprintf("Acknowledged: `%s` will not be planned again until this pull request changes. Comment `!replan` to plan it now.", original.Name)
+				if _, err := gitProvider.AddCommentToPullRequest(ctx, pr, []byte(body)); err != nil {
+					log.Error(err, "failed to add comment to pull request", "PR ID", prId)
+				}
+
 				break
 			}
 		}
@@ -409,8 +429,31 @@ func (s *Server) replanTerraform(ctx context.Context, object *infrav1.Terraform,
 		// The replan runs against the same revision, so an error already
 		// reported for it would otherwise suppress the comment for this run.
 		delete(ann, bpconfig.AnnotationErrorRevision)
+		delete(ann, bpconfig.AnnotationAcknowledgedRevision)
+		delete(ann, bpconfig.AnnotationAcknowledgedAt)
 		terraform.SetAnnotations(ann)
 	}
+	terraform.Spec.Suspend = false
+
+	return s.clusterClient.Patch(ctx, terraform, patch)
+}
+
+// acknowledgeTerraform suspends a plan copy at the pull request head, so a
+// failure that needs new commits stops being retried and alerted on until
+// the head moves, or until a "!replan".
+func (s *Server) acknowledgeTerraform(ctx context.Context, object *infrav1.Terraform, headSha string) error {
+	if headSha == "" {
+		return errors.New("pull request has no head revision")
+	}
+	terraform := &infrav1.Terraform{}
+	if err := s.clusterClient.Get(ctx, types.NamespacedName{Name: object.Name, Namespace: object.Namespace}, terraform); err != nil {
+		return fmt.Errorf("failed to get terraform resource: %w", err)
+	}
+	patch := client.MergeFrom(terraform.DeepCopy())
+
+	metav1.SetMetaDataAnnotation(&terraform.ObjectMeta, bpconfig.AnnotationAcknowledgedRevision, headSha)
+	metav1.SetMetaDataAnnotation(&terraform.ObjectMeta, bpconfig.AnnotationAcknowledgedAt, time.Now().Format(time.RFC3339Nano))
+	terraform.Spec.Suspend = true
 
 	return s.clusterClient.Patch(ctx, terraform, patch)
 }
