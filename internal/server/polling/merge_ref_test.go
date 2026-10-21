@@ -15,10 +15,9 @@ import (
 	"github.com/flux-iac/tofu-controller/internal/git/provider/providerfakes"
 )
 
-// A pull request is planned from its merge onto the base, so the plan is what
-// merging applies. While the provider has not merged it yet the existing plan
-// stays, and a conflicting pull request is told so once and not planned.
-func Test_reconcile_plansMergeResult(t *testing.T) {
+// A pull request is planned from its head branch, and a conflicting pull
+// request is told so once and not planned.
+func Test_reconcile_skipsConflicting(t *testing.T) {
 	g := gomega.NewWithT(t)
 	ns := newNamespace(t, g)
 	ctx := t.Context()
@@ -84,16 +83,15 @@ func Test_reconcile_plansMergeResult(t *testing.T) {
 
 	copy := poll()["1"]
 	g.Expect(copy).NotTo(gomega.BeNil())
-	g.Expect(sourceOf(copy)).To(gomega.Equal(sourcev1.GitRepositoryRef{Name: "refs/pull/1/merge"}), "the merge onto the base is planned")
+	g.Expect(sourceOf(copy)).To(gomega.Equal(sourcev1.GitRepositoryRef{Branch: "change"}), "the head branch is planned")
 
-	// The list has no merge commit yet and fetching the pull request does not
-	// produce one either: the plan from the last merge stays.
+	// The list has no merge commit: the pull request is fetched to learn
+	// whether it conflicts, and planned when it does not.
 	pr.MergeSha = ""
 	fresh.MergeSha = ""
 	copy = poll()["1"]
-	g.Expect(copy).NotTo(gomega.BeNil(), "the existing plan copy is kept while the merge is computed")
-	g.Expect(sourceOf(copy)).To(gomega.Equal(sourcev1.GitRepositoryRef{Name: "refs/pull/1/merge"}))
-	g.Expect(gitProvider.GetPullRequestCallCount()).To(gomega.Equal(1), "the pull request is fetched to have the merge computed")
+	g.Expect(copy).NotTo(gomega.BeNil())
+	g.Expect(gitProvider.GetPullRequestCallCount()).To(gomega.Equal(1), "the pull request is fetched to have its mergeability computed")
 
 	// Fetching the pull request reports a conflict: no plan, one comment.
 	fresh.Conflicting = true
@@ -103,15 +101,9 @@ func Test_reconcile_plansMergeResult(t *testing.T) {
 	poll()
 	g.Expect(posted).To(gomega.HaveLen(1), "the conflict is reported once per head")
 
-	// Resolved: the provider merges it again and the plan follows.
+	// Resolved: the plan follows.
 	pr.MergeSha = "nnn"
 	fresh = pr
-	copy = poll()["1"]
-	g.Expect(copy).NotTo(gomega.BeNil())
-	g.Expect(sourceOf(copy)).To(gomega.Equal(sourcev1.GitRepositoryRef{Name: "refs/pull/1/merge"}))
-
-	// A provider without a merge ref plans the head branch.
-	pr.MergeRef, pr.MergeSha = "", ""
 	copy = poll()["1"]
 	g.Expect(copy).NotTo(gomega.BeNil())
 	g.Expect(sourceOf(copy)).To(gomega.Equal(sourcev1.GitRepositoryRef{Branch: "change"}))

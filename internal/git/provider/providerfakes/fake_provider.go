@@ -26,6 +26,20 @@ type FakeProvider struct {
 		result1 *provider.Comment
 		result2 error
 	}
+	CommitsBehindBaseStub        func(context.Context, provider.PullRequest) (int, error)
+	commitsBehindBaseMutex       sync.RWMutex
+	commitsBehindBaseArgsForCall []struct {
+		arg1 context.Context
+		arg2 provider.PullRequest
+	}
+	commitsBehindBaseReturns struct {
+		result1 int
+		result2 error
+	}
+	commitsBehindBaseReturnsOnCall map[int]struct {
+		result1 int
+		result2 error
+	}
 	GetLastCommentsStub        func(context.Context, provider.PullRequest, time.Time) ([]*provider.Comment, error)
 	getLastCommentsMutex       sync.RWMutex
 	getLastCommentsArgsForCall []struct {
@@ -213,6 +227,71 @@ func (fake *FakeProvider) AddCommentToPullRequestReturnsOnCall(i int, result1 *p
 	}
 	fake.addCommentToPullRequestReturnsOnCall[i] = struct {
 		result1 *provider.Comment
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeProvider) CommitsBehindBase(arg1 context.Context, arg2 provider.PullRequest) (int, error) {
+	fake.commitsBehindBaseMutex.Lock()
+	ret, specificReturn := fake.commitsBehindBaseReturnsOnCall[len(fake.commitsBehindBaseArgsForCall)]
+	fake.commitsBehindBaseArgsForCall = append(fake.commitsBehindBaseArgsForCall, struct {
+		arg1 context.Context
+		arg2 provider.PullRequest
+	}{arg1, arg2})
+	stub := fake.CommitsBehindBaseStub
+	fakeReturns := fake.commitsBehindBaseReturns
+	fake.recordInvocation("CommitsBehindBase", []interface{}{arg1, arg2})
+	fake.commitsBehindBaseMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeProvider) CommitsBehindBaseCallCount() int {
+	fake.commitsBehindBaseMutex.RLock()
+	defer fake.commitsBehindBaseMutex.RUnlock()
+	return len(fake.commitsBehindBaseArgsForCall)
+}
+
+func (fake *FakeProvider) CommitsBehindBaseCalls(stub func(context.Context, provider.PullRequest) (int, error)) {
+	fake.commitsBehindBaseMutex.Lock()
+	defer fake.commitsBehindBaseMutex.Unlock()
+	fake.CommitsBehindBaseStub = stub
+}
+
+func (fake *FakeProvider) CommitsBehindBaseArgsForCall(i int) (context.Context, provider.PullRequest) {
+	fake.commitsBehindBaseMutex.RLock()
+	defer fake.commitsBehindBaseMutex.RUnlock()
+	argsForCall := fake.commitsBehindBaseArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
+func (fake *FakeProvider) CommitsBehindBaseReturns(result1 int, result2 error) {
+	fake.commitsBehindBaseMutex.Lock()
+	defer fake.commitsBehindBaseMutex.Unlock()
+	fake.CommitsBehindBaseStub = nil
+	fake.commitsBehindBaseReturns = struct {
+		result1 int
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeProvider) CommitsBehindBaseReturnsOnCall(i int, result1 int, result2 error) {
+	fake.commitsBehindBaseMutex.Lock()
+	defer fake.commitsBehindBaseMutex.Unlock()
+	fake.CommitsBehindBaseStub = nil
+	if fake.commitsBehindBaseReturnsOnCall == nil {
+		fake.commitsBehindBaseReturnsOnCall = make(map[int]struct {
+			result1 int
+			result2 error
+		})
+	}
+	fake.commitsBehindBaseReturnsOnCall[i] = struct {
+		result1 int
 		result2 error
 	}{result1, result2}
 }

@@ -43,6 +43,9 @@ type URLParserFn = func(repoURL string, options ...ProviderOption) (Provider, Re
 type Provider interface {
 	ListPullRequests(ctx context.Context, repo Repository) ([]PullRequest, error)
 	GetPullRequest(ctx context.Context, repo Repository, number int) (PullRequest, error)
+	// CommitsBehindBase is how many commits the base branch has that the
+	// pull request's head does not; 0 when the provider cannot tell.
+	CommitsBehindBase(ctx context.Context, pr PullRequest) (int, error)
 	AddCommentToPullRequest(ctx context.Context, repo PullRequest, body []byte) (*Comment, error)
 	GetLastComments(ctx context.Context, pr PullRequest, since time.Time) ([]*Comment, error)
 	UpdateCommentOfPullRequest(ctx context.Context, pr PullRequest, commentID int, body []byte) error

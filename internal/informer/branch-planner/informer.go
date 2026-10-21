@@ -229,7 +229,7 @@ func (i *Informer) updateHandler(oldObj, newObj any) {
 
 	i.log.Info("Updated plan", "pr-id", new.Labels[config.LabelPRIDKey])
 
-	content, err := formatPlanOutput(stackName(new), plan)
+	content, err := formatPlanOutput(stackName(new), plan, i.behindBase(ctx, new))
 	if err != nil {
 		i.log.Error(err, "failed to format plan output")
 		return
@@ -402,8 +402,42 @@ func stackName(tf *infrav1.Terraform) string {
 	return tf.Name
 }
 
-func formatPlanOutput(stack, planOutput string) ([]byte, error) {
-	data := struct{ Stack, PlanOutput string }{Stack: stack, PlanOutput: planOutput}
+// behindBase is how far the pull request's branch is behind its base. The
+// plan is of the head branch, so a branch behind its base also plans
+// reverting what the base gained; the comment says so.
+type behindBase struct {
+	Base   string
+	Behind int
+}
+
+func (i *Informer) behindBase(ctx context.Context, tf *infrav1.Terraform) behindBase {
+	repo, err := i.getRepo(ctx, tf)
+	if err != nil {
+		i.log.Error(err, "failed getting repository", "name", tf.Name)
+		return behindBase{}
+	}
+	number, err := strconv.Atoi(tf.Labels[config.LabelPRIDKey])
+	if err != nil {
+		return behindBase{}
+	}
+	pr, err := i.gitProvider.GetPullRequest(ctx, repo, number)
+	if err != nil {
+		i.log.Error(err, "failed getting the pull request", "pr-id", number, "name", tf.Name)
+		return behindBase{}
+	}
+	behind, err := i.gitProvider.CommitsBehindBase(ctx, pr)
+	if err != nil {
+		i.log.Error(err, "failed comparing the pull request with its base", "pr-id", number, "name", tf.Name)
+		return behindBase{}
+	}
+	return behindBase{Base: pr.BaseBranch, Behind: behind}
+}
+
+func formatPlanOutput(stack, planOutput string, behind behindBase) ([]byte, error) {
+	data := struct {
+		Stack, PlanOutput string
+		behindBase
+	}{Stack: stack, PlanOutput: planOutput, behindBase: behind}
 
 	var buf bytes.Buffer
 	if err := parsedPlanTemplate.Execute(&buf, data); err != nil {

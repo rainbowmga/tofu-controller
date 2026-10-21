@@ -96,6 +96,10 @@ func (p *scmProvider) ListPullRequestChanges(ctx context.Context, pr PullRequest
 	return changes, nil
 }
 
+func (p *scmProvider) CommitsBehindBase(context.Context, PullRequest) (int, error) {
+	return 0, nil
+}
+
 func (p *scmProvider) GetPullRequest(ctx context.Context, repo Repository, number int) (PullRequest, error) {
 	pr, _, err := p.client.PullRequests.Find(ctx, repo.String(), number)
 	if err != nil {
