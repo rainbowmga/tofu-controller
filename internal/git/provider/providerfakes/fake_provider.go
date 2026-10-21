@@ -41,6 +41,21 @@ type FakeProvider struct {
 		result1 []*provider.Comment
 		result2 error
 	}
+	GetPullRequestStub        func(context.Context, provider.Repository, int) (provider.PullRequest, error)
+	getPullRequestMutex       sync.RWMutex
+	getPullRequestArgsForCall []struct {
+		arg1 context.Context
+		arg2 provider.Repository
+		arg3 int
+	}
+	getPullRequestReturns struct {
+		result1 provider.PullRequest
+		result2 error
+	}
+	getPullRequestReturnsOnCall map[int]struct {
+		result1 provider.PullRequest
+		result2 error
+	}
 	ListPullRequestChangesStub        func(context.Context, provider.PullRequest) ([]provider.Change, error)
 	listPullRequestChangesMutex       sync.RWMutex
 	listPullRequestChangesArgsForCall []struct {
@@ -264,6 +279,72 @@ func (fake *FakeProvider) GetLastCommentsReturnsOnCall(i int, result1 []*provide
 	}
 	fake.getLastCommentsReturnsOnCall[i] = struct {
 		result1 []*provider.Comment
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeProvider) GetPullRequest(arg1 context.Context, arg2 provider.Repository, arg3 int) (provider.PullRequest, error) {
+	fake.getPullRequestMutex.Lock()
+	ret, specificReturn := fake.getPullRequestReturnsOnCall[len(fake.getPullRequestArgsForCall)]
+	fake.getPullRequestArgsForCall = append(fake.getPullRequestArgsForCall, struct {
+		arg1 context.Context
+		arg2 provider.Repository
+		arg3 int
+	}{arg1, arg2, arg3})
+	stub := fake.GetPullRequestStub
+	fakeReturns := fake.getPullRequestReturns
+	fake.recordInvocation("GetPullRequest", []interface{}{arg1, arg2, arg3})
+	fake.getPullRequestMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeProvider) GetPullRequestCallCount() int {
+	fake.getPullRequestMutex.RLock()
+	defer fake.getPullRequestMutex.RUnlock()
+	return len(fake.getPullRequestArgsForCall)
+}
+
+func (fake *FakeProvider) GetPullRequestCalls(stub func(context.Context, provider.Repository, int) (provider.PullRequest, error)) {
+	fake.getPullRequestMutex.Lock()
+	defer fake.getPullRequestMutex.Unlock()
+	fake.GetPullRequestStub = stub
+}
+
+func (fake *FakeProvider) GetPullRequestArgsForCall(i int) (context.Context, provider.Repository, int) {
+	fake.getPullRequestMutex.RLock()
+	defer fake.getPullRequestMutex.RUnlock()
+	argsForCall := fake.getPullRequestArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
+}
+
+func (fake *FakeProvider) GetPullRequestReturns(result1 provider.PullRequest, result2 error) {
+	fake.getPullRequestMutex.Lock()
+	defer fake.getPullRequestMutex.Unlock()
+	fake.GetPullRequestStub = nil
+	fake.getPullRequestReturns = struct {
+		result1 provider.PullRequest
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeProvider) GetPullRequestReturnsOnCall(i int, result1 provider.PullRequest, result2 error) {
+	fake.getPullRequestMutex.Lock()
+	defer fake.getPullRequestMutex.Unlock()
+	fake.GetPullRequestStub = nil
+	if fake.getPullRequestReturnsOnCall == nil {
+		fake.getPullRequestReturnsOnCall = make(map[int]struct {
+			result1 provider.PullRequest
+			result2 error
+		})
+	}
+	fake.getPullRequestReturnsOnCall[i] = struct {
+		result1 provider.PullRequest
 		result2 error
 	}{result1, result2}
 }

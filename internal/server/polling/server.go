@@ -227,6 +227,43 @@ func (s *Server) pullRequestInScope(ctx context.Context, tf *infrav1.Terraform, 
 	return false
 }
 
+// refreshMerge fetches the pull request on its own, which makes the provider
+// compute its merge onto the base and report conflicts; the list does not.
+func (s *Server) refreshMerge(ctx context.Context, gitProvider provider.Provider, pr provider.PullRequest) provider.PullRequest {
+	fresh, err := gitProvider.GetPullRequest(ctx, pr.Repository, pr.Number)
+	if err != nil {
+		s.log.Error(err, "unable to refresh the pull request", "PR ID", pr.Number)
+		return pr
+	}
+	return fresh
+}
+
+// commentConflict tells the pull request once per head that it is not planned
+// while it conflicts with its base.
+func (s *Server) commentConflict(ctx context.Context, gitProvider provider.Provider, pr provider.PullRequest) {
+	body := fmt.Sprintf("This pull request conflicts with `%s` at %s, so it is not planned. Resolve the conflicts and the plan will run.", pr.BaseBranch, shortSha(pr.HeadSha))
+	comments, err := gitProvider.GetLastComments(ctx, pr, time.Time{})
+	if err != nil {
+		s.log.Error(err, "unable to list pull request comments", "PR ID", pr.Number)
+		return
+	}
+	for _, comment := range comments {
+		if comment != nil && strings.Contains(comment.Body, body) {
+			return
+		}
+	}
+	if _, err := gitProvider.AddCommentToPullRequest(ctx, pr, []byte(body)); err != nil {
+		s.log.Error(err, "failed to add comment to pull request", "PR ID", pr.Number)
+	}
+}
+
+func shortSha(sha string) string {
+	if len(sha) > 7 {
+		return sha[:7]
+	}
+	return sha
+}
+
 // commandSince is the time after which a "!replan" or "!ack" comment counts
 // for a plan copy: a comment that predates the copy, its last plan, or a
 // replan or acknowledgement already acted on has been handled, or never
@@ -260,13 +297,29 @@ func (s *Server) reconcile(ctx context.Context, original *infrav1.Terraform, sou
 		}
 		open[prId] = true
 
+		if pr.MergeRef != "" && pr.MergeSha == "" {
+			pr = s.refreshMerge(ctx, gitProvider, pr)
+			if pr.MergeSha == "" {
+				if pr.Conflicting {
+					log.Info("the pull request conflicts with its base, nothing to plan", "PR ID", prId)
+					s.commentConflict(ctx, gitProvider, pr)
+					continue
+				}
+				// Keep any existing plan object until the provider has merged
+				// the pull request onto its base.
+				log.Info("waiting for the merge of the pull request to be computed", "PR ID", prId)
+				prMap[prId] = pr
+				continue
+			}
+		}
+
 		// Plan the object the pull request would apply, rendered from its
-		// Kustomization at the pull request head, rather than the object in
+		// Kustomization at the planned revision, rather than the object in
 		// the cluster.
 		render, err := s.render(ctx, original, source, pr, prId)
 		if errors.Is(err, errRenderPending) {
 			// Keep any existing plan object until the source catches up.
-			log.Info("waiting for the pull request source to reach the head revision", "PR ID", prId)
+			log.Info("waiting for the pull request source to reach the planned revision", "PR ID", prId)
 			prMap[prId] = pr
 			continue
 		}

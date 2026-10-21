@@ -90,7 +90,7 @@ func (s *Server) reconcileTerraform(ctx context.Context, originalTF *infrav1.Ter
 	branch := pr.HeadBranch
 	tfName := config.PullRequestObjectName(originalTF.Name, prID)
 	msg := fmt.Sprintf("Terraform object %s in the namespace %s", tfName, originalTF.Namespace)
-	source, err := s.reconcileSource(ctx, originalTF.Name, originalSource, branch, prID, interval)
+	source, err := s.reconcileSource(ctx, originalTF.Name, originalSource, planRef(pr), prID, interval)
 	if err != nil {
 		return fmt.Errorf("unable to reconcile Source for %s: %w", msg, err)
 	}
@@ -102,7 +102,7 @@ func (s *Server) reconcileTerraform(ctx context.Context, originalTF *infrav1.Ter
 		},
 	}
 
-	branchLabels := s.createLabels(originalTF.Labels, originalTF.Name, branch, prID)
+	branchLabels := s.createLabels(originalTF.Labels, originalTF.Name, prID)
 	op, err := controllerutil.CreateOrUpdate(ctx, s.clusterClient, tf, func() error {
 		spec := spec.DeepCopy()
 
@@ -170,7 +170,7 @@ func (s *Server) reconcileTerraform(ctx context.Context, originalTF *infrav1.Ter
 	return nil
 }
 
-func (s *Server) reconcileSource(ctx context.Context, tfName string, originalSource *sourcev1.GitRepository, branch string, prID string, interval time.Duration) (*sourcev1.GitRepository, error) {
+func (s *Server) reconcileSource(ctx context.Context, tfName string, originalSource *sourcev1.GitRepository, ref sourcev1.GitRepositoryRef, prID string, interval time.Duration) (*sourcev1.GitRepository, error) {
 	sourceName := config.SourceName(tfName, originalSource.Name, prID)
 	msg := fmt.Sprintf("Source %s in the namespace %s", sourceName, originalSource.Namespace)
 	source := &sourcev1.GitRepository{
@@ -180,17 +180,17 @@ func (s *Server) reconcileSource(ctx context.Context, tfName string, originalSou
 		},
 		Spec: originalSource.Spec,
 	}
-	branchLabels := s.createLabels(originalSource.Labels, originalSource.Name, branch, prID)
+	branchLabels := s.createLabels(originalSource.Labels, originalSource.Name, prID)
 
 	op, err := controllerutil.CreateOrUpdate(ctx, s.clusterClient, source, func() error {
 		source.SetLabels(branchLabels)
 
 		spec := originalSource.Spec.DeepCopy()
 
-		// Track only the PR branch. Flux resolves commit, name, semver and tag
-		// ahead of branch, so any of them copied from the original source would
-		// pin the plan to that ref instead of the pull request.
-		spec.Reference = &sourcev1.GitRepositoryRef{Branch: branch}
+		// Track only the pull request's ref. Flux resolves commit, name, semver
+		// and tag ahead of branch, so any of them copied from the original
+		// source would pin the plan to that ref instead of the pull request.
+		spec.Reference = &ref
 		spec.Interval = metav1.Duration{
 			Duration: interval,
 		}
@@ -208,7 +208,7 @@ func (s *Server) reconcileSource(ctx context.Context, tfName string, originalSou
 	return source, nil
 }
 
-func (s *Server) createLabels(labels map[string]string, originalName string, branch string, prID string) map[string]string {
+func (s *Server) createLabels(labels map[string]string, originalName string, prID string) map[string]string {
 	resultLabels := make(map[string]string)
 	maps.Copy(resultLabels, labels)
 
