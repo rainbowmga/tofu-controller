@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -58,6 +59,30 @@ func (p *GitHubProvider) GetPullRequest(ctx context.Context, repo Repository, nu
 		return PullRequest{}, fmt.Errorf("failed to get pull request %d: %w", number, err)
 	}
 	return githubPullRequest(repo, pr), nil
+}
+
+func (p *GitHubProvider) CommitsBehindBase(ctx context.Context, pr PullRequest) (int, error) {
+	if pr.BaseBranch == "" || pr.HeadSha == "" {
+		return 0, nil
+	}
+	res, err := p.client.Do(ctx, &scm.Request{
+		Method: http.MethodGet,
+		Path:   fmt.Sprintf("repos/%s/compare/%s...%s", pr.Repository.String(), pr.BaseBranch, pr.HeadSha),
+	})
+	if err != nil {
+		return 0, fmt.Errorf("failed to compare pull request %d with %s: %w", pr.Number, pr.BaseBranch, err)
+	}
+	defer res.Body.Close()
+	if res.Status >= 300 {
+		return 0, fmt.Errorf("failed to compare pull request %d with %s: status %d", pr.Number, pr.BaseBranch, res.Status)
+	}
+	var out struct {
+		BehindBy int `json:"behind_by"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		return 0, fmt.Errorf("failed to decode the comparison of pull request %d: %w", pr.Number, err)
+	}
+	return out.BehindBy, nil
 }
 
 func githubPullRequest(repo Repository, pr *scm.PullRequest) PullRequest {

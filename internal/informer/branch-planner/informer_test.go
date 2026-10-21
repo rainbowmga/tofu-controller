@@ -13,6 +13,7 @@ import (
 	"github.com/flux-iac/tofu-controller/api/plan"
 	infrav1 "github.com/flux-iac/tofu-controller/api/v1alpha2"
 	"github.com/flux-iac/tofu-controller/internal/config"
+	"github.com/flux-iac/tofu-controller/internal/git/provider"
 	"github.com/flux-iac/tofu-controller/internal/git/provider/providerfakes"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -86,6 +87,8 @@ func TestInformer(t *testing.T) {
 	g.Expect(err).NotTo(gom.HaveOccurred())
 
 	gitProvider := &providerfakes.FakeProvider{}
+	gitProvider.GetPullRequestReturns(provider.PullRequest{Number: 1, BaseBranch: "main", HeadSha: "abc"}, nil)
+	gitProvider.CommitsBehindBaseReturns(12, nil)
 
 	sharedInformer := createSharedInformer(g, ctx, k8sClient, dynamicClient)
 
@@ -124,7 +127,11 @@ func TestInformer(t *testing.T) {
 	g.Eventually(func() string {
 		_, _, body := gitProvider.AddCommentToPullRequestArgsForCall(0)
 		return string(body)
-	}).Should(gom.And(gom.ContainSubstring("plan output for `helloworld-stack`"), gom.ContainSubstring("terraform plan output")))
+	}).Should(gom.And(
+		gom.ContainSubstring("plan output for `helloworld-stack`"),
+		gom.ContainSubstring("12 commits behind `main`"),
+		gom.ContainSubstring("terraform plan output"),
+	))
 
 	// The comment is recorded on the object, so later updates of the object,
 	// including that record, do not post the same plan again.
@@ -245,4 +252,17 @@ func createSharedInformer(g *gom.WithT, ctx context.Context, client client.Clien
 	factory := dynamicinformer.NewFilteredDynamicSharedInformerFactory(dynamicClient, time.Minute, corev1.NamespaceAll, tweakListOptionsFunc)
 
 	return factory.ForResource(mapping.Resource).Informer()
+}
+
+func Test_formatPlanOutput_behindBase(t *testing.T) {
+	g := gom.NewWithT(t)
+	current, err := formatPlanOutput("stack", "plan", behindBase{})
+	g.Expect(err).NotTo(gom.HaveOccurred())
+	g.Expect(string(current)).NotTo(gom.ContainSubstring("behind"))
+	g.Expect(string(current)).To(gom.HavePrefix("tf-controller plan output for `stack`:\n\n```hcl\nplan\n```"))
+
+	one, err := formatPlanOutput("stack", "plan", behindBase{Base: "main", Behind: 1})
+	g.Expect(err).NotTo(gom.HaveOccurred())
+	g.Expect(string(one)).To(gom.ContainSubstring("plan output for `stack`:\n\n> This branch is 1 commit behind `main`"))
+	g.Expect(string(one)).To(gom.ContainSubstring("would apply.\n\n```hcl\nplan\n```"))
 }

@@ -13,6 +13,6 @@ Branch `rainbow/v0.16.5` is upstream `v0.16.5` plus the patches below. Only the 
 - Branch planner plan copies carry `event.toolkit.fluxcd.io/branch` and `event.toolkit.fluxcd.io/pull-request` annotations, so Flux alerts on a failed pull request plan name the branch and pull request.
 - Plan copies also carry `event.toolkit.fluxcd.io/pull-request-url`, so those alerts link to the pull request.
 - `!ack` on a pull request suspends the failing plan copy at the current head: no retries and no alerts until new commits arrive, or until `!replan`. The planner confirms the acknowledgement with one comment.
-- A pull request that conflicts with its base is told so once and not planned. Planning GitHub's merge of the pull request onto its base (`refs/pull/N/merge`) was tried and reverted: source-controller cannot fetch a ref that is neither a branch nor a tag, so the head branch is planned and a branch behind its base also shows reverting what the base gained.
+- A pull request that conflicts with its base is told so once and not planned. Planning GitHub's merge of the pull request onto its base (`refs/pull/N/merge`) was tried and reverted: source-controller cannot fetch a ref that is neither a branch nor a tag, so the head branch is planned and a branch behind its base also shows reverting what the base gained. The plan comment says how many commits behind the base the branch is, so such a plan is recognisable.
 
 The fixes are meant to go upstream; drop each patch once a release includes it.

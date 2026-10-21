@@ -50,6 +50,10 @@ func (p *GitLabProvider) ListPullRequestChanges(ctx context.Context, pr PullRequ
 	return changes, nil
 }
 
+func (p *GitLabProvider) CommitsBehindBase(context.Context, PullRequest) (int, error) {
+	return 0, nil
+}
+
 func (p *GitLabProvider) GetPullRequest(ctx context.Context, repo Repository, number int) (PullRequest, error) {
 	pr, _, err := p.client.PullRequests.Find(ctx, repo.String(), number)
 	if err != nil {
