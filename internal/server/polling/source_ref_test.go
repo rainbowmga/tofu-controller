@@ -57,9 +57,6 @@ func Test_planRef(t *testing.T) {
 	g.Expect(planSha(head)).To(gomega.Equal("aaa"))
 
 	merged := provider.PullRequest{HeadBranch: "feature", HeadSha: "aaa", MergeRef: "refs/pull/1/merge", MergeSha: "mmm"}
-	g.Expect(planRef(merged)).To(gomega.Equal(sourcev1.GitRepositoryRef{Name: "refs/pull/1/merge"}), "the merge onto the base is planned when the provider has one")
-	g.Expect(planSha(merged)).To(gomega.Equal("mmm"))
-
-	uncomputed := provider.PullRequest{HeadBranch: "feature", HeadSha: "aaa", MergeRef: "refs/pull/1/merge"}
-	g.Expect(planRef(uncomputed)).To(gomega.Equal(sourcev1.GitRepositoryRef{Branch: "feature"}), "callers wait for the merge instead; the head is the fallback")
+	g.Expect(planRef(merged)).To(gomega.Equal(sourcev1.GitRepositoryRef{Branch: "feature"}), "source-controller cannot fetch refs/pull/N/merge, so the head is planned")
+	g.Expect(planSha(merged)).To(gomega.Equal("aaa"))
 }

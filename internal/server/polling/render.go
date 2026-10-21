@@ -48,21 +48,18 @@ var kustomizationGVK = schema.GroupVersionKind{
 // revision the pull request is planned from yet.
 var errRenderPending = errors.New("render source is not at the planned revision yet")
 
-// planRef is where a pull request is planned from: the provider's merge of
-// the pull request onto its base when it has one, so the plan shows what
-// merging would apply instead of reverting what the base gained since the
-// branch point, and the head branch otherwise.
+// planRef is where a pull request is planned from: its head branch. The
+// provider's merge of the pull request onto its base (refs/pull/N/merge)
+// would show what merging applies, but source-controller cannot fetch it:
+// for a ref that is neither a branch nor a tag, fluxcd/pkg/git clones the
+// branches and then looks the commit up, and a merge commit is on none of
+// them. Until that is fixed upstream the head is planned, and the plan of a
+// branch behind its base also shows reverting what the base gained.
 func planRef(pr provider.PullRequest) sourcev1.GitRepositoryRef {
-	if pr.MergeRef != "" && pr.MergeSha != "" {
-		return sourcev1.GitRepositoryRef{Name: pr.MergeRef}
-	}
 	return sourcev1.GitRepositoryRef{Branch: pr.HeadBranch}
 }
 
 func planSha(pr provider.PullRequest) string {
-	if pr.MergeRef != "" && pr.MergeSha != "" {
-		return pr.MergeSha
-	}
 	return pr.HeadSha
 }
 

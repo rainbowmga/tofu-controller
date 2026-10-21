@@ -297,18 +297,12 @@ func (s *Server) reconcile(ctx context.Context, original *infrav1.Terraform, sou
 		}
 		open[prId] = true
 
+		// A pull request that cannot merge has nothing worth planning.
 		if pr.MergeRef != "" && pr.MergeSha == "" {
 			pr = s.refreshMerge(ctx, gitProvider, pr)
-			if pr.MergeSha == "" {
-				if pr.Conflicting {
-					log.Info("the pull request conflicts with its base, nothing to plan", "PR ID", prId)
-					s.commentConflict(ctx, gitProvider, pr)
-					continue
-				}
-				// Keep any existing plan object until the provider has merged
-				// the pull request onto its base.
-				log.Info("waiting for the merge of the pull request to be computed", "PR ID", prId)
-				prMap[prId] = pr
+			if pr.Conflicting {
+				log.Info("the pull request conflicts with its base, nothing to plan", "PR ID", prId)
+				s.commentConflict(ctx, gitProvider, pr)
 				continue
 			}
 		}
