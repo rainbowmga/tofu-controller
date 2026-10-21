@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -61,28 +62,48 @@ func (p *GitHubProvider) GetPullRequest(ctx context.Context, repo Repository, nu
 	return githubPullRequest(repo, pr), nil
 }
 
-func (p *GitHubProvider) CommitsBehindBase(ctx context.Context, pr PullRequest) (int, error) {
+func (p *GitHubProvider) CompareWithBase(ctx context.Context, pr PullRequest) (Comparison, error) {
 	if pr.BaseBranch == "" || pr.HeadSha == "" {
-		return 0, nil
+		return Comparison{}, nil
 	}
 	res, err := p.client.Do(ctx, &scm.Request{
 		Method: http.MethodGet,
 		Path:   fmt.Sprintf("repos/%s/compare/%s...%s", pr.Repository.String(), pr.BaseBranch, pr.HeadSha),
 	})
 	if err != nil {
-		return 0, fmt.Errorf("failed to compare pull request %d with %s: %w", pr.Number, pr.BaseBranch, err)
+		return Comparison{}, fmt.Errorf("failed to compare pull request %d with %s: %w", pr.Number, pr.BaseBranch, err)
 	}
 	defer res.Body.Close()
 	if res.Status >= 300 {
-		return 0, fmt.Errorf("failed to compare pull request %d with %s: status %d", pr.Number, pr.BaseBranch, res.Status)
+		return Comparison{}, fmt.Errorf("failed to compare pull request %d with %s: status %d", pr.Number, pr.BaseBranch, res.Status)
 	}
 	var out struct {
-		BehindBy int `json:"behind_by"`
+		BehindBy  int `json:"behind_by"`
+		MergeBase struct {
+			Sha string `json:"sha"`
+		} `json:"merge_base_commit"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
-		return 0, fmt.Errorf("failed to decode the comparison of pull request %d: %w", pr.Number, err)
+		return Comparison{}, fmt.Errorf("failed to decode the comparison of pull request %d: %w", pr.Number, err)
 	}
-	return out.BehindBy, nil
+	return Comparison{MergeBase: out.MergeBase.Sha, BehindBy: out.BehindBy}, nil
+}
+
+// DownloadArchive streams GitHub's tarball of the repository at sha. GitHub
+// answers with a redirect to a signed URL, which the client follows.
+func (p *GitHubProvider) DownloadArchive(ctx context.Context, repo Repository, sha string) (io.ReadCloser, error) {
+	res, err := p.client.Do(ctx, &scm.Request{
+		Method: http.MethodGet,
+		Path:   fmt.Sprintf("repos/%s/tarball/%s", repo.String(), sha),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to download %s at %s: %w", repo, sha, err)
+	}
+	if res.Status >= 300 {
+		res.Body.Close()
+		return nil, fmt.Errorf("failed to download %s at %s: status %d", repo, sha, res.Status)
+	}
+	return res.Body, nil
 }
 
 func githubPullRequest(repo Repository, pr *scm.PullRequest) PullRequest {

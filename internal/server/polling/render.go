@@ -5,24 +5,20 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 
 	securejoin "github.com/cyphar/filepath-securejoin"
-	"github.com/fluxcd/pkg/apis/meta"
-	"github.com/fluxcd/pkg/http/fetch"
 	"github.com/fluxcd/pkg/kustomize"
 	securefs "github.com/fluxcd/pkg/kustomize/filesys"
 	"github.com/fluxcd/pkg/tar"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	infrav1 "github.com/flux-iac/tofu-controller/api/v1alpha2"
 	bpconfig "github.com/flux-iac/tofu-controller/internal/config"
@@ -33,8 +29,9 @@ const (
 	kustomizeNameLabel      = "kustomize.toolkit.fluxcd.io/name"
 	kustomizeNamespaceLabel = "kustomize.toolkit.fluxcd.io/namespace"
 
-	// renderSourceLabel marks the per pull request sources used to render
-	// Kustomizations; its value identifies the repository.
+	// renderSourceLabel marked the per pull request GitRepositories earlier
+	// releases rendered from. Renders now come from the provider's archives,
+	// and the planner removes any such sources it still finds.
 	renderSourceLabel = "infra.weave.works/render-source"
 )
 
@@ -43,10 +40,6 @@ var kustomizationGVK = schema.GroupVersionKind{
 	Version: "v1",
 	Kind:    "Kustomization",
 }
-
-// errRenderPending means the pull request's render source has not fetched the
-// revision the pull request is planned from yet.
-var errRenderPending = errors.New("render source is not at the planned revision yet")
 
 // planRef is where a pull request is planned from: its head branch. The
 // provider's merge of the pull request onto its base (refs/pull/N/merge)
@@ -64,19 +57,24 @@ func planSha(pr provider.PullRequest) string {
 }
 
 // prRender is a Terraform object as a pull request would apply it, rendered
-// from the pull request revision of the Flux Kustomization that applies it.
+// from the pull request head of the Flux Kustomization that applies it.
 // changed reports whether what it plans differs from the same render at the
-// revision the Kustomization currently applies.
+// commit the pull request branched from, that is, whether the pull request
+// itself changes it.
 type prRender struct {
 	terraform *infrav1.Terraform
 	changed   bool
 }
 
-// renderCache keeps renders per Kustomization and revision, so the stacks one
+// renderCache keeps renders per Kustomization and commit, so the stacks one
 // Kustomization applies share a single download and build.
-type renderCache struct {
+type renderCache = cache[renderEntry]
+
+// cache is a bounded map that forgets everything rather than evict: the
+// entries it holds are cheap to recompute and few are live at once.
+type cache[T any] struct {
 	mu      sync.Mutex
-	entries map[string]renderEntry
+	entries map[string]T
 }
 
 type renderEntry struct {
@@ -92,27 +90,27 @@ func (e renderEntry) find(name, namespace string) *infrav1.Terraform {
 	return nil
 }
 
-func (c *renderCache) get(key string) (renderEntry, bool) {
+func (c *cache[T]) get(key string) (T, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	e, ok := c.entries[key]
 	return e, ok
 }
 
-func (c *renderCache) put(key string, e renderEntry) {
+func (c *cache[T]) put(key string, e T) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.entries == nil || len(c.entries) > 256 {
-		c.entries = map[string]renderEntry{}
+		c.entries = map[string]T{}
 	}
 	c.entries[key] = e
 }
 
 // renderForPullRequest renders original as the pull request would apply it.
-// It returns nil when original was not applied by a Flux Kustomization, or by
-// one whose source is a different repository; the caller then plans the
-// in-cluster object as before.
-func (s *Server) renderForPullRequest(ctx context.Context, original *infrav1.Terraform, source *sourcev1.GitRepository, pr provider.PullRequest, prID string) (*prRender, error) {
+// It returns nil when original was not applied by a Flux Kustomization, by
+// one whose source is a different repository, or when the provider cannot
+// serve archives; the caller then plans the in-cluster object as before.
+func (s *Server) renderForPullRequest(ctx context.Context, gitProvider provider.Provider, original *infrav1.Terraform, source *sourcev1.GitRepository, pr provider.PullRequest, prID string) (*prRender, error) {
 	ksName := original.Labels[kustomizeNameLabel]
 	if ksName == "" {
 		return nil, nil
@@ -140,19 +138,18 @@ func (s *Server) renderForPullRequest(ctx context.Context, original *infrav1.Ter
 		return nil, nil
 	}
 
-	renderSource, err := s.reconcileRenderSource(ctx, ksSource, ksRepo, planRef(pr), prID)
+	mergeBase, err := s.mergeBase(ctx, gitProvider, pr)
 	if err != nil {
 		return nil, err
 	}
-	artifact := renderSource.GetArtifact()
-	if artifact == nil || !strings.HasSuffix(artifact.Revision, planSha(pr)) {
-		if err := s.requestReconcile(ctx, renderSource, planSha(pr)); err != nil {
-			return nil, err
-		}
-		return nil, errRenderPending
+	if mergeBase == "" {
+		return nil, nil
 	}
 
-	head, err := s.renderRevision(ctx, ks, artifact)
+	head, err := s.renderCommit(ctx, gitProvider, pr.Repository, ks, pr.HeadSha)
+	if errors.Is(err, provider.ErrArchiveUnsupported) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -162,13 +159,10 @@ func (s *Server) renderForPullRequest(ctx context.Context, original *infrav1.Ter
 		return &prRender{changed: true}, nil
 	}
 
-	// The stack in the cluster is what the Kustomization rendered from its own
-	// artifact, so that render is the baseline a pull request is compared to.
-	baseArtifact := ksSource.GetArtifact()
-	if baseArtifact == nil {
-		return nil, fmt.Errorf("source of Kustomization %s/%s has no artifact", ksNamespace, ksName)
-	}
-	base, err := s.renderRevision(ctx, ks, baseArtifact)
+	// What the pull request changes is the difference to the commit it
+	// branched from. Against the base's tip, a branch behind it would look
+	// like it changes every stack the base has touched since.
+	base, err := s.renderCommit(ctx, gitProvider, pr.Repository, ks, mergeBase)
 	if err != nil {
 		return nil, err
 	}
@@ -180,15 +174,34 @@ func (s *Server) renderForPullRequest(ctx context.Context, original *infrav1.Ter
 	}, nil
 }
 
-// renderRevision builds the Kustomization from artifact, once per revision.
-func (s *Server) renderRevision(ctx context.Context, ks *unstructured.Unstructured, artifact *meta.Artifact) (renderEntry, error) {
-	key := fmt.Sprintf("%s/%s@%s", ks.GetNamespace(), ks.GetName(), artifact.Revision)
+// mergeBase is the commit a pull request branched from, asked of the provider
+// once per head: every stack of every poll compares against it, and it only
+// moves with the head.
+func (s *Server) mergeBase(ctx context.Context, gitProvider provider.Provider, pr provider.PullRequest) (string, error) {
+	key := fmt.Sprintf("%s#%d@%s", pr.Repository, pr.Number, pr.HeadSha)
+	if base, ok := s.mergeBases.get(key); ok {
+		return base, nil
+	}
+	comparison, err := gitProvider.CompareWithBase(ctx, pr)
+	if err != nil {
+		return "", err
+	}
+	if comparison.MergeBase != "" {
+		s.mergeBases.put(key, comparison.MergeBase)
+	}
+	return comparison.MergeBase, nil
+}
+
+// renderCommit builds the Kustomization from the provider's archive of the
+// repository at sha, once per commit.
+func (s *Server) renderCommit(ctx context.Context, gitProvider provider.Provider, repo provider.Repository, ks *unstructured.Unstructured, sha string) (renderEntry, error) {
+	key := fmt.Sprintf("%s/%s@%s", ks.GetNamespace(), ks.GetName(), sha)
 	if entry, ok := s.renders.get(key); ok {
 		return entry, nil
 	}
-	entry, err := renderArtifact(ctx, s.clusterClient, *ks, artifact.URL, artifact.Digest)
+	entry, err := renderArchive(ctx, s.clusterClient, gitProvider, repo, *ks, sha)
 	if err != nil {
-		return renderEntry{}, fmt.Errorf("unable to render Kustomization %s/%s at %s: %w", ks.GetNamespace(), ks.GetName(), artifact.Revision, err)
+		return renderEntry{}, fmt.Errorf("unable to render Kustomization %s/%s at %s: %w", ks.GetNamespace(), ks.GetName(), sha, err)
 	}
 	s.renders.put(key, entry)
 	return entry, nil
@@ -235,100 +248,63 @@ func (s *Server) kustomizationSource(ctx context.Context, ks *unstructured.Unstr
 	return src, nil
 }
 
-// reconcileRenderSource keeps one source per repository and pull request,
-// tracking the revision the pull request is planned from, for rendering
-// Kustomizations.
-func (s *Server) reconcileRenderSource(ctx context.Context, ksSource *sourcev1.GitRepository, repo string, ref sourcev1.GitRepositoryRef, prID string) (*sourcev1.GitRepository, error) {
-	src := &sourcev1.GitRepository{
-		ObjectMeta: renderSourceMeta(ksSource.Namespace, repo, prID),
-	}
-
-	_, err := controllerutil.CreateOrUpdate(ctx, s.clusterClient, src, func() error {
-		spec := ksSource.Spec.DeepCopy()
-		spec.Reference = &ref
-		spec.Interval.Duration = s.branchPollingInterval
-		if spec.Interval.Duration == 0 {
-			spec.Interval.Duration = time.Minute
-		}
-		spec.Suspend = false
-		src.Spec = *spec
-		src.SetLabels(map[string]string{
-			bpconfig.LabelKey:     bpconfig.LabelValue,
-			bpconfig.LabelPRIDKey: prID,
-			renderSourceLabel:     repo,
-		})
-		return nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("unable to reconcile render source %s: %w", src.Name, err)
-	}
-	return src, nil
-}
-
-// requestReconcile asks source-controller to fetch the pull request head now
-// instead of at its next interval, once per head revision.
-func (s *Server) requestReconcile(ctx context.Context, src *sourcev1.GitRepository, head string) error {
-	if src.GetAnnotations()[meta.ReconcileRequestAnnotation] == head {
-		return nil
-	}
-	patch := client.MergeFrom(src.DeepCopy())
-	ann := src.GetAnnotations()
-	if ann == nil {
-		ann = map[string]string{}
-	}
-	ann[meta.ReconcileRequestAnnotation] = head
-	src.SetAnnotations(ann)
-	if err := s.clusterClient.Patch(ctx, src, patch); err != nil {
-		return fmt.Errorf("unable to request reconciliation of %s: %w", src.Name, err)
-	}
-	return nil
-}
-
-// deleteStaleRenderSources removes render sources of the repository whose
-// pull request is no longer open.
-func (s *Server) deleteStaleRenderSources(ctx context.Context, namespace, url string, open map[string]bool) error {
-	repo, err := repoKey(url)
-	if err != nil {
-		return nil
-	}
+// deleteRenderSources removes the per pull request render sources earlier
+// releases kept, which nothing reads any more.
+func (s *Server) deleteRenderSources(ctx context.Context, namespace string) error {
 	list := &sourcev1.GitRepositoryList{}
-	if err := s.clusterClient.List(ctx, list, client.InNamespace(namespace), client.MatchingLabels{
-		bpconfig.LabelKey: bpconfig.LabelValue,
-		renderSourceLabel: repo,
-	}); err != nil {
+	if err := s.clusterClient.List(ctx, list, client.InNamespace(namespace), client.HasLabels{renderSourceLabel}); err != nil {
 		return fmt.Errorf("unable to list render sources: %w", err)
 	}
 	for i := range list.Items {
-		src := &list.Items[i]
-		if open[src.Labels[bpconfig.LabelPRIDKey]] {
-			continue
-		}
-		if err := s.clusterClient.Delete(ctx, src); client.IgnoreNotFound(err) != nil {
-			return fmt.Errorf("unable to delete render source %s: %w", src.Name, err)
+		if err := s.clusterClient.Delete(ctx, &list.Items[i]); client.IgnoreNotFound(err) != nil {
+			return fmt.Errorf("unable to delete render source %s: %w", list.Items[i].Name, err)
 		}
 	}
 	return nil
 }
 
-// renderArtifact fetches a source artifact the way kustomize-controller does,
-// and renders the Kustomization from it.
-func renderArtifact(ctx context.Context, kubeClient client.Client, ks unstructured.Unstructured, url, digest string) (renderEntry, error) {
+// renderArchive downloads the repository at sha from the provider and renders
+// the Kustomization from it. The archive holds one top-level directory.
+func renderArchive(ctx context.Context, kubeClient client.Client, gitProvider provider.Provider, repo provider.Repository, ks unstructured.Unstructured, sha string) (renderEntry, error) {
+	archive, err := gitProvider.DownloadArchive(ctx, repo, sha)
+	if err != nil {
+		return renderEntry{}, err
+	}
+	defer archive.Close()
+
 	root, err := os.MkdirTemp("", "branch-planner-render-")
 	if err != nil {
 		return renderEntry{}, err
 	}
 	defer os.RemoveAll(root)
 
-	fetcher := fetch.New(
-		fetch.WithRetries(3),
-		fetch.WithMaxDownloadSize(tar.UnlimitedUntarSize),
-		fetch.WithUntar(tar.WithMaxUntarSize(tar.UnlimitedUntarSize)),
-		fetch.WithHostnameOverwrite(os.Getenv("SOURCE_CONTROLLER_LOCALHOST")),
-	)
-	if err := fetcher.FetchWithContext(ctx, url, digest, root); err != nil {
-		return renderEntry{}, fmt.Errorf("unable to fetch artifact: %w", err)
+	if err := tar.Untar(archive, root, tar.WithMaxUntarSize(tar.UnlimitedUntarSize)); err != nil {
+		return renderEntry{}, fmt.Errorf("unable to extract archive: %w", err)
 	}
-	return renderDir(ctx, kubeClient, ks, root)
+	top, err := singleDirectory(root)
+	if err != nil {
+		return renderEntry{}, err
+	}
+	return renderDir(ctx, kubeClient, ks, top)
+}
+
+// singleDirectory is the one directory an archive extracted into root; the
+// archive's pax header may sit next to it as a file.
+func singleDirectory(root string) (string, error) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return "", err
+	}
+	var dirs []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			dirs = append(dirs, entry.Name())
+		}
+	}
+	if len(dirs) != 1 {
+		return "", fmt.Errorf("archive has %d top-level directories, expected one", len(dirs))
+	}
+	return filepath.Join(root, dirs[0]), nil
 }
 
 // renderDir builds the Kustomization the way kustomize-controller does, and
@@ -395,11 +371,4 @@ func repoKey(url string) (string, error) {
 		return "", err
 	}
 	return bpconfig.GenerateUniqueHash(strings.ToLower(repo.String())), nil
-}
-
-func renderSourceMeta(namespace, repo, prID string) metav1.ObjectMeta {
-	return metav1.ObjectMeta{
-		Namespace: namespace,
-		Name:      bpconfig.PullRequestObjectName("branch-planner-render-"+repo, prID),
-	}
 }

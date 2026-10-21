@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -96,8 +97,12 @@ func (p *scmProvider) ListPullRequestChanges(ctx context.Context, pr PullRequest
 	return changes, nil
 }
 
-func (p *scmProvider) CommitsBehindBase(context.Context, PullRequest) (int, error) {
-	return 0, nil
+func (p *scmProvider) CompareWithBase(context.Context, PullRequest) (Comparison, error) {
+	return Comparison{}, nil
+}
+
+func (p *scmProvider) DownloadArchive(context.Context, Repository, string) (io.ReadCloser, error) {
+	return nil, ErrArchiveUnsupported
 }
 
 func (p *scmProvider) GetPullRequest(ctx context.Context, repo Repository, number int) (PullRequest, error) {

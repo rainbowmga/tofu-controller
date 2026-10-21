@@ -38,8 +38,9 @@ type Server struct {
 
 	// render returns a Terraform object as a pull request would apply it.
 	// Tests replace it; it defaults to renderForPullRequest.
-	render  func(ctx context.Context, original *infrav1.Terraform, source *sourcev1.GitRepository, pr provider.PullRequest, prID string) (*prRender, error)
-	renders renderCache
+	render     func(ctx context.Context, gitProvider provider.Provider, original *infrav1.Terraform, source *sourcev1.GitRepository, pr provider.PullRequest, prID string) (*prRender, error)
+	renders    renderCache
+	mergeBases cache[string]
 }
 
 func New(options ...Option) (*Server, error) {
@@ -289,13 +290,11 @@ func (s *Server) reconcile(ctx context.Context, original *infrav1.Terraform, sou
 	// Create a map of the pull requests that get a plan, with the PR number as
 	// the key and the PR itself as the value.
 	prMap := map[string]provider.PullRequest{}
-	open := map[string]bool{}
 	for _, pr := range prs {
 		prId := fmt.Sprintf("%d", pr.Number)
 		if pr.Closed {
 			continue
 		}
-		open[prId] = true
 
 		// A pull request that cannot merge has nothing worth planning.
 		if pr.MergeRef != "" && pr.MergeSha == "" {
@@ -308,15 +307,9 @@ func (s *Server) reconcile(ctx context.Context, original *infrav1.Terraform, sou
 		}
 
 		// Plan the object the pull request would apply, rendered from its
-		// Kustomization at the planned revision, rather than the object in
+		// Kustomization at the pull request head, rather than the object in
 		// the cluster.
-		render, err := s.render(ctx, original, source, pr, prId)
-		if errors.Is(err, errRenderPending) {
-			// Keep any existing plan object until the source catches up.
-			log.Info("waiting for the pull request source to reach the planned revision", "PR ID", prId)
-			prMap[prId] = pr
-			continue
-		}
+		render, err := s.render(ctx, gitProvider, original, source, pr, prId)
 		if err != nil {
 			log.Error(err, "unable to render the pull request, planning the in-cluster object", "PR ID", prId)
 			render = nil
@@ -347,8 +340,8 @@ func (s *Server) reconcile(ctx context.Context, original *infrav1.Terraform, sou
 		}
 	}
 
-	if err := s.deleteStaleRenderSources(ctx, source.Namespace, source.Spec.URL, open); err != nil {
-		log.Error(err, "failed to delete render sources of closed pull requests")
+	if err := s.deleteRenderSources(ctx, source.Namespace); err != nil {
+		log.Error(err, "failed to delete the render sources of earlier releases")
 	}
 
 	// List the Terraform planner objects in the namespace of the original object

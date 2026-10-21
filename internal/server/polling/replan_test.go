@@ -101,7 +101,7 @@ func Test_reconcile_replanOnce(t *testing.T) {
 
 	server, err := New(WithClusterClient(k8sClient))
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	server.render = func(context.Context, *infrav1.Terraform, *sourcev1.GitRepository, provider.PullRequest, string) (*prRender, error) {
+	server.render = func(context.Context, provider.Provider, *infrav1.Terraform, *sourcev1.GitRepository, provider.PullRequest, string) (*prRender, error) {
 		return nil, nil
 	}
 
@@ -173,7 +173,7 @@ func Test_reconcile_acknowledge(t *testing.T) {
 
 	server, err := New(WithClusterClient(k8sClient))
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	server.render = func(context.Context, *infrav1.Terraform, *sourcev1.GitRepository, provider.PullRequest, string) (*prRender, error) {
+	server.render = func(context.Context, provider.Provider, *infrav1.Terraform, *sourcev1.GitRepository, provider.PullRequest, string) (*prRender, error) {
 		return nil, nil
 	}
 	poll := func() *infrav1.Terraform {
