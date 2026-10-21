@@ -5,10 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"net/http"
-	"net/http/httptest"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -206,22 +203,33 @@ func tarGz(t *testing.T, files map[string]string) []byte {
 	return buf.Bytes()
 }
 
-func Test_renderArtifact(t *testing.T) {
+func Test_renderArchive(t *testing.T) {
 	g := gomega.NewWithT(t)
-	archive := tarGz(t, renderFixture)
-	sum := sha256.Sum256(archive)
+	prefixed := map[string]string{}
+	for path, content := range renderFixture {
+		prefixed["org-repo-abc/"+path] = content
+	}
+	archive := tarGz(t, prefixed)
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write(archive)
-	}))
-	defer srv.Close()
+	gitProvider := &providerfakes.FakeProvider{}
+	gitProvider.DownloadArchiveCalls(func(context.Context, provider.Repository, string) (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(archive)), nil
+	})
+	repo := provider.Repository{Org: "org", Name: "repo"}
+	ks := fixtureKustomization()
 
-	entry, err := renderArtifact(context.Background(), fixtureClient().Build(), fixtureKustomization(), srv.URL+"/a.tar.gz", "sha256:"+hex.EncodeToString(sum[:]))
+	s := &Server{clusterClient: fixtureClient().Build()}
+	entry, err := s.renderCommit(context.Background(), gitProvider, repo, &ks, "abc")
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	g.Expect(entry.terraforms).To(gomega.HaveLen(2))
+	g.Expect(entry.terraforms).To(gomega.HaveLen(2), "the archive's top-level directory is the repository root")
 
-	_, err = renderArtifact(context.Background(), fixtureClient().Build(), fixtureKustomization(), srv.URL+"/a.tar.gz", "sha256:"+hex.EncodeToString(make([]byte, 32)))
-	g.Expect(err).To(gomega.HaveOccurred(), "a digest mismatch fails the fetch")
+	_, err = s.renderCommit(context.Background(), gitProvider, repo, &ks, "abc")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(gitProvider.DownloadArchiveCallCount()).To(gomega.Equal(1), "a commit is downloaded and rendered once")
+
+	gitProvider.DownloadArchiveReturns(nil, provider.ErrArchiveUnsupported)
+	_, err = s.renderCommit(context.Background(), gitProvider, repo, &ks, "def")
+	g.Expect(err).To(gomega.MatchError(provider.ErrArchiveUnsupported), "unsupported providers are told apart from failures")
 }
 
 func Test_repoKey(t *testing.T) {

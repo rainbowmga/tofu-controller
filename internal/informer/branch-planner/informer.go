@@ -425,12 +425,12 @@ func (i *Informer) behindBase(ctx context.Context, tf *infrav1.Terraform) behind
 		i.log.Error(err, "failed getting the pull request", "pr-id", number, "name", tf.Name)
 		return behindBase{}
 	}
-	behind, err := i.gitProvider.CommitsBehindBase(ctx, pr)
+	comparison, err := i.gitProvider.CompareWithBase(ctx, pr)
 	if err != nil {
 		i.log.Error(err, "failed comparing the pull request with its base", "pr-id", number, "name", tf.Name)
 		return behindBase{}
 	}
-	return behindBase{Base: pr.BaseBranch, Behind: behind}
+	return behindBase{Base: pr.BaseBranch, Behind: comparison.BehindBy}
 }
 
 func formatPlanOutput(stack, planOutput string, behind behindBase) ([]byte, error) {

@@ -3,6 +3,7 @@ package providerfakes
 
 import (
 	"context"
+	"io"
 	"sync"
 	"time"
 
@@ -26,18 +27,33 @@ type FakeProvider struct {
 		result1 *provider.Comment
 		result2 error
 	}
-	CommitsBehindBaseStub        func(context.Context, provider.PullRequest) (int, error)
-	commitsBehindBaseMutex       sync.RWMutex
-	commitsBehindBaseArgsForCall []struct {
+	CompareWithBaseStub        func(context.Context, provider.PullRequest) (provider.Comparison, error)
+	compareWithBaseMutex       sync.RWMutex
+	compareWithBaseArgsForCall []struct {
 		arg1 context.Context
 		arg2 provider.PullRequest
 	}
-	commitsBehindBaseReturns struct {
-		result1 int
+	compareWithBaseReturns struct {
+		result1 provider.Comparison
 		result2 error
 	}
-	commitsBehindBaseReturnsOnCall map[int]struct {
-		result1 int
+	compareWithBaseReturnsOnCall map[int]struct {
+		result1 provider.Comparison
+		result2 error
+	}
+	DownloadArchiveStub        func(context.Context, provider.Repository, string) (io.ReadCloser, error)
+	downloadArchiveMutex       sync.RWMutex
+	downloadArchiveArgsForCall []struct {
+		arg1 context.Context
+		arg2 provider.Repository
+		arg3 string
+	}
+	downloadArchiveReturns struct {
+		result1 io.ReadCloser
+		result2 error
+	}
+	downloadArchiveReturnsOnCall map[int]struct {
+		result1 io.ReadCloser
 		result2 error
 	}
 	GetLastCommentsStub        func(context.Context, provider.PullRequest, time.Time) ([]*provider.Comment, error)
@@ -231,17 +247,17 @@ func (fake *FakeProvider) AddCommentToPullRequestReturnsOnCall(i int, result1 *p
 	}{result1, result2}
 }
 
-func (fake *FakeProvider) CommitsBehindBase(arg1 context.Context, arg2 provider.PullRequest) (int, error) {
-	fake.commitsBehindBaseMutex.Lock()
-	ret, specificReturn := fake.commitsBehindBaseReturnsOnCall[len(fake.commitsBehindBaseArgsForCall)]
-	fake.commitsBehindBaseArgsForCall = append(fake.commitsBehindBaseArgsForCall, struct {
+func (fake *FakeProvider) CompareWithBase(arg1 context.Context, arg2 provider.PullRequest) (provider.Comparison, error) {
+	fake.compareWithBaseMutex.Lock()
+	ret, specificReturn := fake.compareWithBaseReturnsOnCall[len(fake.compareWithBaseArgsForCall)]
+	fake.compareWithBaseArgsForCall = append(fake.compareWithBaseArgsForCall, struct {
 		arg1 context.Context
 		arg2 provider.PullRequest
 	}{arg1, arg2})
-	stub := fake.CommitsBehindBaseStub
-	fakeReturns := fake.commitsBehindBaseReturns
-	fake.recordInvocation("CommitsBehindBase", []interface{}{arg1, arg2})
-	fake.commitsBehindBaseMutex.Unlock()
+	stub := fake.CompareWithBaseStub
+	fakeReturns := fake.compareWithBaseReturns
+	fake.recordInvocation("CompareWithBase", []interface{}{arg1, arg2})
+	fake.compareWithBaseMutex.Unlock()
 	if stub != nil {
 		return stub(arg1, arg2)
 	}
@@ -251,47 +267,113 @@ func (fake *FakeProvider) CommitsBehindBase(arg1 context.Context, arg2 provider.
 	return fakeReturns.result1, fakeReturns.result2
 }
 
-func (fake *FakeProvider) CommitsBehindBaseCallCount() int {
-	fake.commitsBehindBaseMutex.RLock()
-	defer fake.commitsBehindBaseMutex.RUnlock()
-	return len(fake.commitsBehindBaseArgsForCall)
+func (fake *FakeProvider) CompareWithBaseCallCount() int {
+	fake.compareWithBaseMutex.RLock()
+	defer fake.compareWithBaseMutex.RUnlock()
+	return len(fake.compareWithBaseArgsForCall)
 }
 
-func (fake *FakeProvider) CommitsBehindBaseCalls(stub func(context.Context, provider.PullRequest) (int, error)) {
-	fake.commitsBehindBaseMutex.Lock()
-	defer fake.commitsBehindBaseMutex.Unlock()
-	fake.CommitsBehindBaseStub = stub
+func (fake *FakeProvider) CompareWithBaseCalls(stub func(context.Context, provider.PullRequest) (provider.Comparison, error)) {
+	fake.compareWithBaseMutex.Lock()
+	defer fake.compareWithBaseMutex.Unlock()
+	fake.CompareWithBaseStub = stub
 }
 
-func (fake *FakeProvider) CommitsBehindBaseArgsForCall(i int) (context.Context, provider.PullRequest) {
-	fake.commitsBehindBaseMutex.RLock()
-	defer fake.commitsBehindBaseMutex.RUnlock()
-	argsForCall := fake.commitsBehindBaseArgsForCall[i]
+func (fake *FakeProvider) CompareWithBaseArgsForCall(i int) (context.Context, provider.PullRequest) {
+	fake.compareWithBaseMutex.RLock()
+	defer fake.compareWithBaseMutex.RUnlock()
+	argsForCall := fake.compareWithBaseArgsForCall[i]
 	return argsForCall.arg1, argsForCall.arg2
 }
 
-func (fake *FakeProvider) CommitsBehindBaseReturns(result1 int, result2 error) {
-	fake.commitsBehindBaseMutex.Lock()
-	defer fake.commitsBehindBaseMutex.Unlock()
-	fake.CommitsBehindBaseStub = nil
-	fake.commitsBehindBaseReturns = struct {
-		result1 int
+func (fake *FakeProvider) CompareWithBaseReturns(result1 provider.Comparison, result2 error) {
+	fake.compareWithBaseMutex.Lock()
+	defer fake.compareWithBaseMutex.Unlock()
+	fake.CompareWithBaseStub = nil
+	fake.compareWithBaseReturns = struct {
+		result1 provider.Comparison
 		result2 error
 	}{result1, result2}
 }
 
-func (fake *FakeProvider) CommitsBehindBaseReturnsOnCall(i int, result1 int, result2 error) {
-	fake.commitsBehindBaseMutex.Lock()
-	defer fake.commitsBehindBaseMutex.Unlock()
-	fake.CommitsBehindBaseStub = nil
-	if fake.commitsBehindBaseReturnsOnCall == nil {
-		fake.commitsBehindBaseReturnsOnCall = make(map[int]struct {
-			result1 int
+func (fake *FakeProvider) CompareWithBaseReturnsOnCall(i int, result1 provider.Comparison, result2 error) {
+	fake.compareWithBaseMutex.Lock()
+	defer fake.compareWithBaseMutex.Unlock()
+	fake.CompareWithBaseStub = nil
+	if fake.compareWithBaseReturnsOnCall == nil {
+		fake.compareWithBaseReturnsOnCall = make(map[int]struct {
+			result1 provider.Comparison
 			result2 error
 		})
 	}
-	fake.commitsBehindBaseReturnsOnCall[i] = struct {
-		result1 int
+	fake.compareWithBaseReturnsOnCall[i] = struct {
+		result1 provider.Comparison
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeProvider) DownloadArchive(arg1 context.Context, arg2 provider.Repository, arg3 string) (io.ReadCloser, error) {
+	fake.downloadArchiveMutex.Lock()
+	ret, specificReturn := fake.downloadArchiveReturnsOnCall[len(fake.downloadArchiveArgsForCall)]
+	fake.downloadArchiveArgsForCall = append(fake.downloadArchiveArgsForCall, struct {
+		arg1 context.Context
+		arg2 provider.Repository
+		arg3 string
+	}{arg1, arg2, arg3})
+	stub := fake.DownloadArchiveStub
+	fakeReturns := fake.downloadArchiveReturns
+	fake.recordInvocation("DownloadArchive", []interface{}{arg1, arg2, arg3})
+	fake.downloadArchiveMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeProvider) DownloadArchiveCallCount() int {
+	fake.downloadArchiveMutex.RLock()
+	defer fake.downloadArchiveMutex.RUnlock()
+	return len(fake.downloadArchiveArgsForCall)
+}
+
+func (fake *FakeProvider) DownloadArchiveCalls(stub func(context.Context, provider.Repository, string) (io.ReadCloser, error)) {
+	fake.downloadArchiveMutex.Lock()
+	defer fake.downloadArchiveMutex.Unlock()
+	fake.DownloadArchiveStub = stub
+}
+
+func (fake *FakeProvider) DownloadArchiveArgsForCall(i int) (context.Context, provider.Repository, string) {
+	fake.downloadArchiveMutex.RLock()
+	defer fake.downloadArchiveMutex.RUnlock()
+	argsForCall := fake.downloadArchiveArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
+}
+
+func (fake *FakeProvider) DownloadArchiveReturns(result1 io.ReadCloser, result2 error) {
+	fake.downloadArchiveMutex.Lock()
+	defer fake.downloadArchiveMutex.Unlock()
+	fake.DownloadArchiveStub = nil
+	fake.downloadArchiveReturns = struct {
+		result1 io.ReadCloser
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeProvider) DownloadArchiveReturnsOnCall(i int, result1 io.ReadCloser, result2 error) {
+	fake.downloadArchiveMutex.Lock()
+	defer fake.downloadArchiveMutex.Unlock()
+	fake.DownloadArchiveStub = nil
+	if fake.downloadArchiveReturnsOnCall == nil {
+		fake.downloadArchiveReturnsOnCall = make(map[int]struct {
+			result1 io.ReadCloser
+			result2 error
+		})
+	}
+	fake.downloadArchiveReturnsOnCall[i] = struct {
+		result1 io.ReadCloser
 		result2 error
 	}{result1, result2}
 }

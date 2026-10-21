@@ -2,7 +2,9 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -40,12 +42,25 @@ type URLParserFn = func(repoURL string, options ...ProviderOption) (Provider, Re
 
 //go:generate go run github.com/maxbrunsfeld/counterfeiter/v6 . Provider
 
+// Comparison is how a pull request's head relates to its base branch:
+// MergeBase is the commit they diverged from, and BehindBy how many commits
+// the base has that the head does not. Both are zero when the provider
+// cannot tell.
+type Comparison struct {
+	MergeBase string
+	BehindBy  int
+}
+
+var ErrArchiveUnsupported = errors.New("the provider cannot download repository archives")
+
 type Provider interface {
 	ListPullRequests(ctx context.Context, repo Repository) ([]PullRequest, error)
 	GetPullRequest(ctx context.Context, repo Repository, number int) (PullRequest, error)
-	// CommitsBehindBase is how many commits the base branch has that the
-	// pull request's head does not; 0 when the provider cannot tell.
-	CommitsBehindBase(ctx context.Context, pr PullRequest) (int, error)
+	// CompareWithBase compares the pull request's head with its base branch.
+	CompareWithBase(ctx context.Context, pr PullRequest) (Comparison, error)
+	// DownloadArchive streams a tar.gz of the repository at a commit, with a
+	// single top-level directory, or ErrArchiveUnsupported.
+	DownloadArchive(ctx context.Context, repo Repository, sha string) (io.ReadCloser, error)
 	AddCommentToPullRequest(ctx context.Context, repo PullRequest, body []byte) (*Comment, error)
 	GetLastComments(ctx context.Context, pr PullRequest, since time.Time) ([]*Comment, error)
 	UpdateCommentOfPullRequest(ctx context.Context, pr PullRequest, commentID int, body []byte) error

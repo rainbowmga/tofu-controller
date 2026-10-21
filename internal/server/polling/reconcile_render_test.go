@@ -46,7 +46,6 @@ func Test_reconcile_plansRenderedSpec(t *testing.T) {
 	repo := provider.Repository{Org: "org", Name: "repo"}
 	prs := []provider.PullRequest{
 		{Repository: repo, Number: 1, HeadBranch: "manifest-change", HeadSha: "aaa"},
-		{Repository: repo, Number: 2, HeadBranch: "pending", HeadSha: "bbb"},
 		{Repository: repo, Number: 3, HeadBranch: "removes-stack", HeadSha: "ccc"},
 		{Repository: repo, Number: 4, HeadBranch: "unrelated", HeadSha: "ddd"},
 	}
@@ -62,14 +61,10 @@ func Test_reconcile_plansRenderedSpec(t *testing.T) {
 	rendered := original.DeepCopy()
 	rendered.Spec.Vars = []infrav1.Variable{{Name: "environment", Value: &apiextensionsv1.JSON{Raw: []byte(`"from-pull-request"`)}}}
 	rendered.Spec.ServiceAccountName = "kustomize-controller"
-	pending := map[string]bool{"2": true}
-
 	server, err := New(WithClusterClient(k8sClient))
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	server.render = func(_ context.Context, _ *infrav1.Terraform, _ *sourcev1.GitRepository, pr provider.PullRequest, prID string) (*prRender, error) {
+	server.render = func(_ context.Context, _ provider.Provider, _ *infrav1.Terraform, _ *sourcev1.GitRepository, pr provider.PullRequest, _ string) (*prRender, error) {
 		switch {
-		case pending[prID]:
-			return nil, errRenderPending
 		case pr.Number == 3:
 			return &prRender{changed: true}, nil
 		case pr.Number == 4:
@@ -82,7 +77,7 @@ func Test_reconcile_plansRenderedSpec(t *testing.T) {
 	expectToSucceed(t, g, server.reconcile(ctx, original, source, prs, gitProvider))
 
 	copies := planCopies(t, g, ns.Name, original.Name)
-	g.Expect(copies).To(gomega.HaveLen(1), "only the manifest change is planned: #2 waits, #3 removes the stack, #4 renders the stack as it is")
+	g.Expect(copies).To(gomega.HaveLen(1), "only the manifest change is planned: #3 removes the stack, #4 renders the stack as it is")
 	pr1 := copies["1"]
 	g.Expect(pr1).NotTo(gomega.BeNil())
 	g.Expect(pr1.Spec.Vars).To(gomega.HaveLen(1))
@@ -91,11 +86,6 @@ func Test_reconcile_plansRenderedSpec(t *testing.T) {
 	g.Expect(pr1.Spec.ServiceAccountName).To(gomega.Equal(original.Spec.ServiceAccountName), "the runner identity stays as merged")
 	g.Expect(pr1.Spec.Plan).NotTo(gomega.BeNil())
 	g.Expect(*pr1.Spec.Plan.Lock).To(gomega.BeFalse(), "plan copies never hold the stack's state lock")
-
-	// While a pull request's render is pending, its existing plan copy stays.
-	pending["1"] = true
-	expectToSucceed(t, g, server.reconcile(ctx, original, source, prs, gitProvider))
-	g.Expect(planCopies(t, g, ns.Name, original.Name)).To(gomega.HaveKey("1"))
 }
 
 func planCopies(t *testing.T, g gomega.Gomega, namespace, primary string) map[string]*infrav1.Terraform {

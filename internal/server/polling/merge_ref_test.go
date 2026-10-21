@@ -66,7 +66,7 @@ func Test_reconcile_skipsConflicting(t *testing.T) {
 
 	server, err := New(WithClusterClient(k8sClient))
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	server.render = func(context.Context, *infrav1.Terraform, *sourcev1.GitRepository, provider.PullRequest, string) (*prRender, error) {
+	server.render = func(context.Context, provider.Provider, *infrav1.Terraform, *sourcev1.GitRepository, provider.PullRequest, string) (*prRender, error) {
 		return nil, nil
 	}
 	poll := func() map[string]*infrav1.Terraform {

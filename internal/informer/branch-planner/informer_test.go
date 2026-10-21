@@ -88,7 +88,7 @@ func TestInformer(t *testing.T) {
 
 	gitProvider := &providerfakes.FakeProvider{}
 	gitProvider.GetPullRequestReturns(provider.PullRequest{Number: 1, BaseBranch: "main", HeadSha: "abc"}, nil)
-	gitProvider.CommitsBehindBaseReturns(12, nil)
+	gitProvider.CompareWithBaseReturns(provider.Comparison{BehindBy: 12, MergeBase: "base"}, nil)
 
 	sharedInformer := createSharedInformer(g, ctx, k8sClient, dynamicClient)
 

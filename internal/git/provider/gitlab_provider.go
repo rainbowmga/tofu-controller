@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -50,8 +51,12 @@ func (p *GitLabProvider) ListPullRequestChanges(ctx context.Context, pr PullRequ
 	return changes, nil
 }
 
-func (p *GitLabProvider) CommitsBehindBase(context.Context, PullRequest) (int, error) {
-	return 0, nil
+func (p *GitLabProvider) CompareWithBase(context.Context, PullRequest) (Comparison, error) {
+	return Comparison{}, nil
+}
+
+func (p *GitLabProvider) DownloadArchive(context.Context, Repository, string) (io.ReadCloser, error) {
+	return nil, ErrArchiveUnsupported
 }
 
 func (p *GitLabProvider) GetPullRequest(ctx context.Context, repo Repository, number int) (PullRequest, error) {
