@@ -15,4 +15,6 @@ Branch `rainbow/v0.16.5` is upstream `v0.16.5` plus the patches below. Only the 
 - `!ack` on a pull request suspends the failing plan copy at the current head: no retries and no alerts until new commits arrive, or until `!replan`. The planner confirms the acknowledgement with one comment.
 - A pull request that conflicts with its base is told so once and not planned. Planning GitHub's merge of the pull request onto its base (`refs/pull/N/merge`) was tried and reverted: source-controller cannot fetch a ref that is neither a branch nor a tag, so the head branch is planned and a branch behind its base also shows reverting what the base gained. The plan comment says how many commits behind the base the branch is, so such a plan is recognisable.
 
+- Plan copies, and the sources they plan from, go to the namespace in the ConfigMap's `planNamespace` and run as `planServiceAccountName`, so pull request code never runs as the identity that applies the stack. The plan namespace holds its own `varsFrom` Secrets and source credential under the stack's names. Copies left next to their stack are deleted.
+
 The fixes are meant to go upstream; drop each patch once a release includes it.

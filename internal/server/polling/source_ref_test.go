@@ -39,13 +39,13 @@ func Test_reconcileSource_tracksOnlyBranch(t *testing.T) {
 	server, err := New(WithClusterClient(k8sClient))
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	source, err := server.reconcileSource(t.Context(), "helloworld", original, sourcev1.GitRepositoryRef{Branch: "feature-branch"}, "42", time.Minute)
+	source, err := server.reconcileSource(t.Context(), "helloworld", original, original.Namespace, sourcev1.GitRepositoryRef{Branch: "feature-branch"}, "42", time.Minute)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
 	expectToEqual(t, g, *source.Spec.Reference, sourcev1.GitRepositoryRef{Branch: "feature-branch"})
 	g.Expect(original.Spec.Reference.Tag).To(gomega.Equal("v1.2.3"), "the original source must not be modified")
 
-	source, err = server.reconcileSource(t.Context(), "helloworld", original, sourcev1.GitRepositoryRef{Name: "refs/pull/42/merge"}, "42", time.Minute)
+	source, err = server.reconcileSource(t.Context(), "helloworld", original, original.Namespace, sourcev1.GitRepositoryRef{Name: "refs/pull/42/merge"}, "42", time.Minute)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	expectToEqual(t, g, *source.Spec.Reference, sourcev1.GitRepositoryRef{Name: "refs/pull/42/merge"})
 }

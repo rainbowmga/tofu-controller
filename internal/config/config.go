@@ -51,6 +51,10 @@ const (
 //   # Key in the secret: token
 //   secretNamespace: flux-system
 //   secretName: bbp-token
+//   # Namespace and runner service account of the plan copies. Plans run
+//   # pull request code, so give them an identity that cannot apply.
+//   planNamespace: tf-plan
+//   planServiceAccountName: tf-planner
 //   # List of Terraform resources
 //   resources: |-
 //     - namespace: flux-system
@@ -67,6 +71,15 @@ type Config struct {
 	SecretNamespace string
 	SecretName      string
 	Labels          map[string]string
+	Plan            Plan
+}
+
+// Plan is where plan copies run and as whom. An empty Namespace keeps each
+// copy next to its stack, and an empty ServiceAccountName keeps the stack's
+// runner service account.
+type Plan struct {
+	Namespace          string
+	ServiceAccountName string
 }
 
 func ReadConfig(ctx context.Context, clusterClient client.Client, configMapObjectKey types.NamespacedName) (Config, error) {
@@ -101,6 +114,10 @@ func ReadConfig(ctx context.Context, clusterClient client.Client, configMapObjec
 	config := Config{}
 	config.SecretNamespace = configMap.Data["secretNamespace"]
 	config.SecretName = configMap.Data["secretName"]
+	config.Plan = Plan{
+		Namespace:          configMap.Data["planNamespace"],
+		ServiceAccountName: configMap.Data["planServiceAccountName"],
+	}
 	resourceData := configMap.Data["resources"]
 	if config.SecretNamespace == "" {
 		config.SecretNamespace = RuntimeNamespace()
