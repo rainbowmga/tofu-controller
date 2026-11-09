@@ -36,6 +36,9 @@ type Server struct {
 	noCrossNamespaceRefs  bool
 	gitProviderParserFn   provider.URLParserFn
 
+	// plan is where plan copies run and as whom, read from the ConfigMap.
+	plan bpconfig.Plan
+
 	// render returns a Terraform object as a pull request would apply it.
 	// Tests replace it; it defaults to renderForPullRequest.
 	render  func(ctx context.Context, original *infrav1.Terraform, source *sourcev1.GitRepository, pr provider.PullRequest, prID string) (*prRender, error)
@@ -76,6 +79,7 @@ func (s *Server) Start(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
+			s.plan = config.Plan
 
 			secret, err := s.getSecret(ctx, client.ObjectKey{
 				Namespace: config.SecretNamespace,
@@ -351,12 +355,28 @@ func (s *Server) reconcile(ctx context.Context, original *infrav1.Terraform, sou
 		log.Error(err, "failed to delete render sources of closed pull requests")
 	}
 
-	// List the Terraform planner objects in the namespace of the original object
-	log.Info("listing Terraform objects...")
-	tfPlannerObjects, err := s.listTerraformObjects(ctx, original.Namespace, map[string]string{
+	plannerLabels := map[string]string{
 		bpconfig.LabelKey:                bpconfig.LabelValue,
 		bpconfig.LabelPrimaryResourceKey: original.Name,
-	})
+	}
+
+	// Copies left next to the stack from before plans had a namespace of
+	// their own still run as the stack's runner, so they go.
+	if namespace := s.planNamespace(original); namespace != original.Namespace {
+		misplaced, err := s.listTerraformObjects(ctx, original.Namespace, plannerLabels)
+		if err != nil {
+			return fmt.Errorf("failed to list Terraform objects: %w", err)
+		}
+		for _, tfPlannerObject := range misplaced {
+			log.Info("deleting a plan copy outside the plan namespace", "name", tfPlannerObject.Name, "namespace", tfPlannerObject.Namespace)
+			if err := s.deleteTerraformAndSource(ctx, tfPlannerObject); err != nil {
+				log.Error(err, "failed to delete Terraform object", "name", tfPlannerObject.Name, "namespace", tfPlannerObject.Namespace)
+			}
+		}
+	}
+
+	log.Info("listing Terraform objects...")
+	tfPlannerObjects, err := s.listTerraformObjects(ctx, s.planNamespace(original), plannerLabels)
 
 	// If an error occurs, wrap it with context information and return it.
 	if err != nil {

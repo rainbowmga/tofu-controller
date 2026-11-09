@@ -88,9 +88,10 @@ func (s *Server) getSource(ctx context.Context, tf *infrav1.Terraform) (*sourcev
 // in-cluster spec when it could not be rendered.
 func (s *Server) reconcileTerraform(ctx context.Context, originalTF *infrav1.Terraform, spec infrav1.TerraformSpec, originalSource *sourcev1.GitRepository, pr provider.PullRequest, prID string, interval time.Duration) error {
 	branch := pr.HeadBranch
+	namespace := s.planNamespace(originalTF)
 	tfName := config.PullRequestObjectName(originalTF.Name, prID)
-	msg := fmt.Sprintf("Terraform object %s in the namespace %s", tfName, originalTF.Namespace)
-	source, err := s.reconcileSource(ctx, originalTF.Name, originalSource, planRef(pr), prID, interval)
+	msg := fmt.Sprintf("Terraform object %s in the namespace %s", tfName, namespace)
+	source, err := s.reconcileSource(ctx, originalTF.Name, originalSource, namespace, planRef(pr), prID, interval)
 	if err != nil {
 		return fmt.Errorf("unable to reconcile Source for %s: %w", msg, err)
 	}
@@ -98,7 +99,7 @@ func (s *Server) reconcileTerraform(ctx context.Context, originalTF *infrav1.Ter
 	tf := &infrav1.Terraform{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      tfName,
-			Namespace: originalTF.Namespace,
+			Namespace: namespace,
 		},
 	}
 
@@ -112,6 +113,12 @@ func (s *Server) reconcileTerraform(ctx context.Context, originalTF *infrav1.Ter
 		// DestroyResourcesOnDeletion must be false, otherwise plan deletion will destroy resources
 		spec.DestroyResourcesOnDeletion = false
 		spec.PlanOnly = true
+
+		// The plan runs code from the pull request, so it runs as the plan
+		// identity rather than the one that applies the stack.
+		if s.plan.ServiceAccountName != "" {
+			spec.ServiceAccountName = s.plan.ServiceAccountName
+		}
 
 		// A plan copy only reads state, so it must not hold the lock the
 		// stack itself needs to apply.
@@ -170,13 +177,13 @@ func (s *Server) reconcileTerraform(ctx context.Context, originalTF *infrav1.Ter
 	return nil
 }
 
-func (s *Server) reconcileSource(ctx context.Context, tfName string, originalSource *sourcev1.GitRepository, ref sourcev1.GitRepositoryRef, prID string, interval time.Duration) (*sourcev1.GitRepository, error) {
+func (s *Server) reconcileSource(ctx context.Context, tfName string, originalSource *sourcev1.GitRepository, namespace string, ref sourcev1.GitRepositoryRef, prID string, interval time.Duration) (*sourcev1.GitRepository, error) {
 	sourceName := config.SourceName(tfName, originalSource.Name, prID)
-	msg := fmt.Sprintf("Source %s in the namespace %s", sourceName, originalSource.Namespace)
+	msg := fmt.Sprintf("Source %s in the namespace %s", sourceName, namespace)
 	source := &sourcev1.GitRepository{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      sourceName,
-			Namespace: originalSource.Namespace,
+			Namespace: namespace,
 		},
 		Spec: originalSource.Spec,
 	}
@@ -206,6 +213,14 @@ func (s *Server) reconcileSource(ctx context.Context, tfName string, originalSou
 	}
 
 	return source, nil
+}
+
+// planNamespace is the namespace of the plan copies of tf.
+func (s *Server) planNamespace(tf *infrav1.Terraform) string {
+	if s.plan.Namespace == "" {
+		return tf.Namespace
+	}
+	return s.plan.Namespace
 }
 
 func (s *Server) createLabels(labels map[string]string, originalName string, prID string) map[string]string {
